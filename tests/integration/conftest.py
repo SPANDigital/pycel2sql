@@ -315,9 +315,17 @@ def bq_container():
         .with_exposed_ports(9050)
         .with_command("--project=test-project --dataset=test_dataset")
     )
-    with container:
+    try:
+        container.start()
         wait_for_logs(container, "listening", timeout=60)
-        yield container
+    except Exception as exc:
+        try:
+            container.stop()
+        except Exception:
+            pass
+        pytest.skip(f"BigQuery emulator unavailable: {exc}")
+    yield container
+    container.stop()
 
 
 # ---------------------------------------------------------------------------
