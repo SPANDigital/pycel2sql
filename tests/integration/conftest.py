@@ -311,13 +311,14 @@ def bq_container():
         pytest.skip(
             f"BigQuery emulator requires x86_64 (current: {platform.machine()})"
         )
-    # Pre-pull with a timeout so we don't hang CI for 10+ minutes when
-    # ghcr.io is unreachable.
+    # Pre-pull with a tight timeout so we don't hang CI when ghcr.io
+    # is unreachable.  60 s is enough for a cached/fast pull; if the
+    # image isn't reachable in that time, skip gracefully.
     runtime = "docker" if shutil.which("docker") else "podman"
     try:
         subprocess.run(
             [runtime, "pull", _BQ_IMAGE],
-            timeout=120, check=True, capture_output=True,
+            timeout=60, check=True, capture_output=True,
         )
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as exc:
         pytest.skip(f"Could not pull BigQuery emulator image: {exc}")
