@@ -1,0 +1,113 @@
+"""pycel2sql - Convert CEL expressions to SQL WHERE clauses."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from celpy.celparser import CELParser
+
+from pycel2sql._converter import Converter
+from pycel2sql._errors import ConversionError
+from pycel2sql.dialect._base import Dialect
+from pycel2sql.dialect.postgres import PostgresDialect
+from pycel2sql.schema import Schema
+
+__all__ = [
+    "convert",
+    "convert_parameterized",
+    "Result",
+    "ConversionError",
+]
+
+_parser = CELParser()
+
+
+@dataclass(frozen=True)
+class Result:
+    """Result of a parameterized conversion."""
+
+    sql: str
+    parameters: list[Any] = field(default_factory=list)
+
+
+def convert(
+    cel_expr: str,
+    *,
+    dialect: Dialect | None = None,
+    schemas: dict[str, Schema] | None = None,
+    max_depth: int | None = None,
+    max_output_length: int | None = None,
+) -> str:
+    """Convert a CEL expression to an inline SQL WHERE clause string.
+
+    Args:
+        cel_expr: The CEL expression to convert.
+        dialect: SQL dialect to use. Defaults to PostgreSQL.
+        schemas: Optional table schemas for JSON/array field detection.
+        max_depth: Maximum recursion depth. Defaults to 100.
+        max_output_length: Maximum SQL output length. Defaults to 50000.
+
+    Returns:
+        The SQL WHERE clause string.
+
+    Raises:
+        ConversionError: If conversion fails.
+    """
+    if dialect is None:
+        dialect = PostgresDialect()
+
+    tree = _parser.parse(cel_expr)
+
+    kwargs: dict[str, Any] = {}
+    if schemas is not None:
+        kwargs["schemas"] = schemas
+    if max_depth is not None:
+        kwargs["max_depth"] = max_depth
+    if max_output_length is not None:
+        kwargs["max_output_length"] = max_output_length
+
+    converter = Converter(dialect, **kwargs)
+    converter.visit(tree)
+    return converter.result
+
+
+def convert_parameterized(
+    cel_expr: str,
+    *,
+    dialect: Dialect | None = None,
+    schemas: dict[str, Schema] | None = None,
+    max_depth: int | None = None,
+    max_output_length: int | None = None,
+) -> Result:
+    """Convert a CEL expression to a parameterized SQL WHERE clause.
+
+    Args:
+        cel_expr: The CEL expression to convert.
+        dialect: SQL dialect to use. Defaults to PostgreSQL.
+        schemas: Optional table schemas for JSON/array field detection.
+        max_depth: Maximum recursion depth. Defaults to 100.
+        max_output_length: Maximum SQL output length. Defaults to 50000.
+
+    Returns:
+        Result with SQL containing $1, $2, ... placeholders and parameter list.
+
+    Raises:
+        ConversionError: If conversion fails.
+    """
+    if dialect is None:
+        dialect = PostgresDialect()
+
+    tree = _parser.parse(cel_expr)
+
+    kwargs: dict[str, Any] = {"parameterize": True}
+    if schemas is not None:
+        kwargs["schemas"] = schemas
+    if max_depth is not None:
+        kwargs["max_depth"] = max_depth
+    if max_output_length is not None:
+        kwargs["max_output_length"] = max_output_length
+
+    converter = Converter(dialect, **kwargs)
+    converter.visit(tree)
+    return Result(sql=converter.result, parameters=converter.parameters)
