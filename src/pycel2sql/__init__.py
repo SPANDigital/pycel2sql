@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+try:
+    from pycel2sql._version import __version__
+except ModuleNotFoundError:  # editable install without VCS metadata
+    __version__ = "0.0.0.dev0"
+
 from dataclasses import dataclass, field
 from typing import Any
 
