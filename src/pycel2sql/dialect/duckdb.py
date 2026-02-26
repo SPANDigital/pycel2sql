@@ -1,32 +1,46 @@
-"""PostgreSQL dialect implementation."""
+"""DuckDB dialect implementation."""
 
 from __future__ import annotations
 
+import re
+
 from io import StringIO
 
-from pycel2sql._analysis_types import (
-    IndexPattern,
-    IndexRecommendation,
-    IndexType,
-    PatternType,
-)
-from pycel2sql._utils import convert_re2_to_posix, validate_field_name
+from pycel2sql._errors import InvalidFieldNameError
+from pycel2sql._utils import convert_re2_to_re2_native
 from pycel2sql.dialect._base import Dialect, WriteFunc
 
-# CEL type name -> PostgreSQL type name
+# DuckDB reserved keywords
+_DUCKDB_RESERVED: set[str] = {
+    "all", "alter", "and", "any", "array", "as", "asc", "between",
+    "by", "case", "cast", "check", "column", "constraint", "create",
+    "cross", "current", "current_date", "current_time", "current_timestamp",
+    "default", "delete", "desc", "distinct", "drop", "else", "end",
+    "except", "exists", "false", "for", "foreign", "from", "full",
+    "grant", "group", "having", "in", "index", "inner", "insert",
+    "intersect", "into", "is", "isnull", "join", "lateral", "left",
+    "like", "limit", "not", "notnull", "null", "offset", "on", "or",
+    "order", "outer", "primary", "references", "right", "select", "set",
+    "table", "then", "to", "true", "union", "unique", "update", "using",
+    "values", "when", "where", "with",
+}
+
+_FIELD_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+# CEL type name -> DuckDB type name
 _TYPE_MAP: dict[str, str] = {
     "bool": "BOOLEAN",
-    "bytes": "BYTEA",
-    "double": "DOUBLE PRECISION",
+    "bytes": "BLOB",
+    "double": "DOUBLE",
     "int": "BIGINT",
-    "uint": "BIGINT",
-    "string": "TEXT",
-    "timestamp": "TIMESTAMP WITH TIME ZONE",
+    "uint": "UBIGINT",
+    "string": "VARCHAR",
+    "timestamp": "TIMESTAMPTZ",
 }
 
 
-class PostgresDialect(Dialect):
-    """PostgreSQL dialect for CEL-to-SQL conversion."""
+class DuckDBDialect(Dialect):
+    """DuckDB dialect for CEL-to-SQL conversion."""
 
     # --- Literals ---
 
@@ -53,16 +67,18 @@ class PostgresDialect(Dialect):
     def write_regex_match(
         self, w: StringIO, write_target: WriteFunc, pattern: str, case_insensitive: bool
     ) -> None:
-        write_target()
-        if case_insensitive:
-            w.write(" ~* ")
-        else:
-            w.write(" ~ ")
         escaped = pattern.replace("'", "''")
-        w.write(f"'{escaped}'")
+        if case_insensitive:
+            w.write("regexp_matches(")
+            write_target()
+            w.write(f", '{escaped}', 'i')")
+        else:
+            w.write("regexp_matches(")
+            write_target()
+            w.write(f", '{escaped}')")
 
     def write_like_escape(self, w: StringIO) -> None:
-        w.write(" ESCAPE E'\\\\'")
+        w.write(" ESCAPE '\\'" )
 
     def write_array_membership(
         self, w: StringIO, write_elem: WriteFunc, write_array: WriteFunc
@@ -76,7 +92,7 @@ class PostgresDialect(Dialect):
 
     def write_cast_to_numeric(self, w: StringIO, write_expr: WriteFunc) -> None:
         write_expr()
-        w.write("::numeric")
+        w.write("::DOUBLE")
 
     def write_type_name(self, w: StringIO, cel_type_name: str) -> None:
         sql_type = _TYPE_MAP.get(cel_type_name, cel_type_name.upper())
@@ -85,17 +101,17 @@ class PostgresDialect(Dialect):
     def write_epoch_extract(self, w: StringIO, write_expr: WriteFunc) -> None:
         w.write("EXTRACT(EPOCH FROM ")
         write_expr()
-        w.write(")::bigint")
+        w.write(")::BIGINT")
 
     def write_timestamp_cast(self, w: StringIO, write_expr: WriteFunc) -> None:
         w.write("CAST(")
         write_expr()
-        w.write(" AS TIMESTAMP WITH TIME ZONE)")
+        w.write(" AS TIMESTAMPTZ)")
 
     # --- Arrays ---
 
     def write_array_literal_open(self, w: StringIO) -> None:
-        w.write("ARRAY[")
+        w.write("[")
 
     def write_array_literal_close(self, w: StringIO) -> None:
         w.write("]")
@@ -103,9 +119,9 @@ class PostgresDialect(Dialect):
     def write_array_length(
         self, w: StringIO, dimension: int, write_expr: WriteFunc
     ) -> None:
-        w.write("COALESCE(ARRAY_LENGTH(")
+        w.write("COALESCE(array_length(")
         write_expr()
-        w.write(f", {dimension}), 0)")
+        w.write("), 0)")
 
     def write_list_index(
         self, w: StringIO, write_array: WriteFunc, write_index: WriteFunc
@@ -119,11 +135,10 @@ class PostgresDialect(Dialect):
         self, w: StringIO, write_array: WriteFunc, index: int
     ) -> None:
         write_array()
-        # Convert 0-based to 1-based
         w.write(f"[{index + 1}]")
 
     def write_empty_typed_array(self, w: StringIO, type_name: str) -> None:
-        w.write(f"ARRAY[]::{type_name}[]")
+        w.write(f"[]::{type_name}[]")
 
     # --- JSON ---
 
@@ -141,42 +156,35 @@ class PostgresDialect(Dialect):
         self, w: StringIO, is_jsonb: bool, field_name: str, write_base: WriteFunc
     ) -> None:
         escaped = field_name.replace("'", "''")
-        if is_jsonb:
-            write_base()
-            w.write(f" ? '{escaped}'")
-        else:
-            write_base()
-            w.write(f"->'{escaped}' IS NOT NULL")
+        w.write("json_exists(")
+        write_base()
+        w.write(f", '$.{escaped}')")
 
     def write_json_array_elements(
         self, w: StringIO, is_jsonb: bool, as_text: bool, write_expr: WriteFunc
     ) -> None:
-        if is_jsonb:
-            func = "jsonb_array_elements_text" if as_text else "jsonb_array_elements"
-        else:
-            func = "json_array_elements_text" if as_text else "json_array_elements"
-        w.write(f"{func}(")
+        w.write("json_each(")
         write_expr()
         w.write(")")
 
     def write_json_array_length(self, w: StringIO, write_expr: WriteFunc) -> None:
-        w.write("COALESCE(jsonb_array_length(")
+        w.write("COALESCE(json_array_length(")
         write_expr()
         w.write("), 0)")
 
     def write_json_array_membership(
         self, w: StringIO, json_func: str, write_expr: WriteFunc
     ) -> None:
-        w.write(f"ANY(ARRAY(SELECT {json_func}(")
+        w.write("(SELECT value FROM json_each(")
         write_expr()
-        w.write(")))")
+        w.write("))")
 
     def write_nested_json_array_membership(
         self, w: StringIO, write_expr: WriteFunc
     ) -> None:
-        w.write("ANY(ARRAY(SELECT jsonb_array_elements_text(")
+        w.write("(SELECT value FROM json_each(")
         write_expr()
-        w.write(")))")
+        w.write("))")
 
     # --- Timestamps ---
 
@@ -220,16 +228,16 @@ class PostgresDialect(Dialect):
     def write_contains(
         self, w: StringIO, write_haystack: WriteFunc, write_needle: WriteFunc
     ) -> None:
-        w.write("POSITION(")
-        write_needle()
-        w.write(" IN ")
+        w.write("CONTAINS(")
         write_haystack()
-        w.write(") > 0")
+        w.write(", ")
+        write_needle()
+        w.write(")")
 
     def write_split(
         self, w: StringIO, write_str: WriteFunc, write_delim: WriteFunc
     ) -> None:
-        w.write("STRING_TO_ARRAY(")
+        w.write("STRING_SPLIT(")
         write_str()
         w.write(", ")
         write_delim()
@@ -238,11 +246,11 @@ class PostgresDialect(Dialect):
     def write_split_with_limit(
         self, w: StringIO, write_str: WriteFunc, write_delim: WriteFunc, limit: int
     ) -> None:
-        w.write("(STRING_TO_ARRAY(")
+        w.write("STRING_SPLIT(")
         write_str()
         w.write(", ")
         write_delim()
-        w.write(f"))[1:{limit}]")
+        w.write(f")[1:{limit}]")
 
     def write_join(
         self, w: StringIO, write_array: WriteFunc, write_delim: WriteFunc
@@ -251,7 +259,7 @@ class PostgresDialect(Dialect):
         write_array()
         w.write(", ")
         write_delim()
-        w.write(", '')")
+        w.write(")")
 
     # --- Comprehensions ---
 
@@ -264,12 +272,12 @@ class PostgresDialect(Dialect):
         w.write("ARRAY(SELECT ")
 
     def write_array_subquery_expr_close(self, w: StringIO) -> None:
-        pass  # No-op for PostgreSQL
+        pass  # No-op for DuckDB
 
     # --- Regex ---
 
     def convert_regex(self, re2_pattern: str) -> tuple[str, bool]:
-        return convert_re2_to_posix(re2_pattern)
+        return convert_re2_to_re2_native(re2_pattern)
 
     # --- Struct ---
 
@@ -282,10 +290,24 @@ class PostgresDialect(Dialect):
     # --- Validation ---
 
     def max_identifier_length(self) -> int:
-        return 63
+        return 0  # No limit
 
     def validate_field_name(self, name: str) -> None:
-        validate_field_name(name)
+        if not name:
+            raise InvalidFieldNameError(
+                "field name cannot be empty",
+                "empty field name provided",
+            )
+        if not _FIELD_NAME_RE.match(name):
+            raise InvalidFieldNameError(
+                "invalid field name format",
+                f"field name '{name}' contains invalid characters",
+            )
+        if name.lower() in _DUCKDB_RESERVED:
+            raise InvalidFieldNameError(
+                "field name is a reserved SQL keyword",
+                f"field name '{name}' is a reserved DuckDB keyword",
+            )
 
     # --- Capabilities ---
 
@@ -293,63 +315,4 @@ class PostgresDialect(Dialect):
         return True
 
     def supports_jsonb(self) -> bool:
-        return True
-
-    # --- Index Advisor ---
-
-    def recommend_index(self, pattern: IndexPattern) -> IndexRecommendation | None:
-        col = pattern.column
-        table = pattern.table_hint or "table_name"
-
-        if pattern.pattern == PatternType.COMPARISON:
-            return IndexRecommendation(
-                column=col,
-                index_type=IndexType.BTREE,
-                expression=f"CREATE INDEX idx_{table}_{col} ON {table} ({col})",
-                reason=f"BTree index for comparison operations on {col}",
-            )
-        if pattern.pattern == PatternType.JSON_ACCESS:
-            return IndexRecommendation(
-                column=col,
-                index_type=IndexType.GIN,
-                expression=f"CREATE INDEX idx_{table}_{col}_gin ON {table} USING GIN ({col})",
-                reason=f"GIN index for JSON access on {col}",
-            )
-        if pattern.pattern == PatternType.REGEX_MATCH:
-            return IndexRecommendation(
-                column=col,
-                index_type=IndexType.GIN,
-                expression=(
-                    f"CREATE INDEX idx_{table}_{col}_trgm ON {table} "
-                    f"USING GIN ({col} gin_trgm_ops)"
-                ),
-                reason=f"GIN index with pg_trgm for regex matching on {col}",
-            )
-        if pattern.pattern == PatternType.ARRAY_MEMBERSHIP:
-            return IndexRecommendation(
-                column=col,
-                index_type=IndexType.GIN,
-                expression=f"CREATE INDEX idx_{table}_{col}_gin ON {table} USING GIN ({col})",
-                reason=f"GIN index for array membership on {col}",
-            )
-        if pattern.pattern in (
-            PatternType.ARRAY_COMPREHENSION,
-            PatternType.JSON_ARRAY_COMPREHENSION,
-        ):
-            return IndexRecommendation(
-                column=col,
-                index_type=IndexType.GIN,
-                expression=f"CREATE INDEX idx_{table}_{col}_gin ON {table} USING GIN ({col})",
-                reason=f"GIN index for comprehension on {col}",
-            )
-        return None
-
-    def supported_patterns(self) -> list[PatternType]:
-        return [
-            PatternType.COMPARISON,
-            PatternType.JSON_ACCESS,
-            PatternType.REGEX_MATCH,
-            PatternType.ARRAY_MEMBERSHIP,
-            PatternType.ARRAY_COMPREHENSION,
-            PatternType.JSON_ARRAY_COMPREHENSION,
-        ]
+        return False

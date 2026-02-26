@@ -6,6 +6,14 @@ import enum
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from io import StringIO
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from pycel2sql._analysis_types import (
+        IndexPattern,
+        IndexRecommendation,
+        PatternType,
+    )
 
 
 class DialectName(enum.StrEnum):
@@ -61,7 +69,7 @@ class Dialect(ABC):
     # --- Type Casting ---
 
     @abstractmethod
-    def write_cast_to_numeric(self, w: StringIO) -> None: ...
+    def write_cast_to_numeric(self, w: StringIO, write_expr: WriteFunc) -> None: ...
 
     @abstractmethod
     def write_type_name(self, w: StringIO, cel_type_name: str) -> None: ...
@@ -186,6 +194,14 @@ class Dialect(ABC):
     @abstractmethod
     def write_array_subquery_open(self, w: StringIO) -> None: ...
 
+    @abstractmethod
+    def write_array_subquery_expr_close(self, w: StringIO) -> None: ...
+
+    # --- Regex ---
+
+    @abstractmethod
+    def convert_regex(self, re2_pattern: str) -> tuple[str, bool]: ...
+
     # --- Struct ---
 
     @abstractmethod
@@ -209,3 +225,19 @@ class Dialect(ABC):
 
     @abstractmethod
     def supports_jsonb(self) -> bool: ...
+
+
+@runtime_checkable
+class IndexAdvisor(Protocol):
+    """Protocol for dialects that can recommend indexes."""
+
+    def recommend_index(self, pattern: IndexPattern) -> IndexRecommendation | None: ...
+
+    def supported_patterns(self) -> list[PatternType]: ...
+
+
+def get_index_advisor(dialect: Dialect) -> IndexAdvisor | None:
+    """Get the IndexAdvisor if the dialect supports index analysis."""
+    if isinstance(dialect, IndexAdvisor):
+        return dialect
+    return None

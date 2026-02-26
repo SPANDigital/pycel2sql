@@ -27,7 +27,6 @@ from pycel2sql._errors import (
 )
 from pycel2sql._operators import COMPARISON_OPERATORS, NULL_AWARE_OPS
 from pycel2sql._utils import (
-    convert_re2_to_posix,
     escape_like_pattern,
     validate_field_name,
     validate_no_null_bytes,
@@ -336,20 +335,20 @@ class Converter(Interpreter):
             rhs_is_numeric = self._is_numeric_literal(rhs)
             lhs_is_numeric = self._is_numeric_literal(lhs)
             if self._is_json_text_extraction(lhs) and rhs_is_numeric:
-                self._w.write("(")
-                self._visit_child(lhs)
-                self._w.write(")")
-                self._dialect.write_cast_to_numeric(self._w)
+                self._dialect.write_cast_to_numeric(
+                    self._w,
+                    lambda: (self._w.write("("), self._visit_child(lhs), self._w.write(")")),
+                )
                 self._w.write(f" {sql_op} ")
                 self._visit_child(rhs)
                 return
             if self._is_json_text_extraction(rhs) and lhs_is_numeric:
                 self._visit_child(lhs)
                 self._w.write(f" {sql_op} ")
-                self._w.write("(")
-                self._visit_child(rhs)
-                self._w.write(")")
-                self._dialect.write_cast_to_numeric(self._w)
+                self._dialect.write_cast_to_numeric(
+                    self._w,
+                    lambda: (self._w.write("("), self._visit_child(rhs), self._w.write(")")),
+                )
                 return
 
         self._visit_child(lhs)
@@ -1008,11 +1007,11 @@ class Converter(Interpreter):
         raw = _strip_quotes(str(token))
         if not str(token).startswith(("r'", 'r"', "R'", 'R"')):
             raw = self._process_escapes(raw)
-        posix_pattern, case_insensitive = convert_re2_to_posix(raw)
+        converted_pattern, case_insensitive = self._dialect.convert_regex(raw)
         self._dialect.write_regex_match(
             self._w,
             lambda: self._visit_child(obj),
-            posix_pattern,
+            converted_pattern,
             case_insensitive,
         )
 
@@ -1023,11 +1022,11 @@ class Converter(Interpreter):
         raw = _strip_quotes(str(token))
         if not str(token).startswith(("r'", 'r"', "R'", 'R"')):
             raw = self._process_escapes(raw)
-        posix_pattern, case_insensitive = convert_re2_to_posix(raw)
+        converted_pattern, case_insensitive = self._dialect.convert_regex(raw)
         self._dialect.write_regex_match(
             self._w,
             lambda: self._visit_child(target),
-            posix_pattern,
+            converted_pattern,
             case_insensitive,
         )
 
@@ -1596,6 +1595,7 @@ class Converter(Interpreter):
         try:
             self._dialect.write_array_subquery_open(self._w)
             self._visit_child(transform)
+            self._dialect.write_array_subquery_expr_close(self._w)
             self._w.write(" FROM ")
             self._write_unnest_source(source, iter_var)
             self._w.write(")")
@@ -1611,6 +1611,7 @@ class Converter(Interpreter):
         try:
             self._dialect.write_array_subquery_open(self._w)
             self._visit_child(transform)
+            self._dialect.write_array_subquery_expr_close(self._w)
             self._w.write(" FROM ")
             self._write_unnest_source(source, iter_var)
             self._w.write(" WHERE ")
@@ -1629,6 +1630,7 @@ class Converter(Interpreter):
         try:
             self._dialect.write_array_subquery_open(self._w)
             self._w.write(iter_var)
+            self._dialect.write_array_subquery_expr_close(self._w)
             self._w.write(" FROM ")
             self._write_unnest_source(source, iter_var)
             self._w.write(" WHERE ")
@@ -1686,21 +1688,32 @@ class Converter(Interpreter):
             self._w.write(f".{parts[0]}")
             return
 
-        # Write root.json_column
-        self._visit_child(node)
-        # Write JSON path operators
-        for i, part in enumerate(parts):
-            if i == 0:
-                # This is the JSON column name, write as regular field
-                self._w.write(f".{part}")
-            else:
-                is_final = i == len(parts) - 1
+        root_node = node
+        json_col = parts[0]
+
+        # Callback that writes "root.json_column"
+        def write_base() -> None:
+            self._visit_child(root_node)
+            self._w.write(f".{json_col}")
+
+        # Chain through path segments with real callbacks
+        current_base = write_base
+        for i, part in enumerate(parts[1:]):
+            is_final = i == len(parts) - 2
+
+            if is_final:
                 self._dialect.write_json_field_access(
-                    self._w,
-                    lambda: None,  # base already written
-                    part,
-                    is_final,
+                    self._w, current_base, part, True,
                 )
+            else:
+                # Build intermediate callback for nested access
+                def make_base(pb: Any = current_base, cp: str = part) -> Any:
+                    def intermediate() -> None:
+                        self._dialect.write_json_field_access(
+                            self._w, pb, cp, False,
+                        )
+                    return intermediate
+                current_base = make_base()
 
     def _is_json_text_extraction(self, tree: Tree) -> bool:
         """Check if a tree represents a JSON text extraction (->>)."""

@@ -178,3 +178,92 @@ def convert_re2_to_posix(re2_pattern: str) -> tuple[str, bool]:
     pattern = pattern.replace("(?:", "(")
 
     return pattern, case_insensitive
+
+
+def _validate_regex_common(re2_pattern: str) -> tuple[str, bool]:
+    """Common RE2 regex validation and (?i) extraction.
+
+    Returns (pattern_without_flags, case_insensitive).
+    Raises InvalidRegexPatternError on validation failure.
+    """
+    if len(re2_pattern) > MAX_REGEX_LENGTH:
+        raise InvalidRegexPatternError(
+            "regex pattern too long",
+            f"pattern length {len(re2_pattern)} exceeds limit {MAX_REGEX_LENGTH}",
+        )
+
+    validate_no_null_bytes(re2_pattern, "regex patterns")
+
+    case_insensitive = False
+    pattern = re2_pattern
+
+    if pattern.startswith("(?i)"):
+        case_insensitive = True
+        pattern = pattern[4:]
+
+    if re.search(r"\(\?[!=<]", pattern):
+        raise InvalidRegexPatternError(
+            "lookahead/lookbehind not supported",
+            f"pattern contains lookahead/lookbehind: {re2_pattern}",
+        )
+    if re.search(r"\(\?P<", pattern):
+        raise InvalidRegexPatternError(
+            "named captures not supported",
+            f"pattern contains named captures: {re2_pattern}",
+        )
+    if re.search(r"\(\?[imsx]", pattern):
+        raise InvalidRegexPatternError(
+            "inline flags not supported",
+            f"pattern contains inline flags: {re2_pattern}",
+        )
+
+    if _REDOS_NESTED_QUANTIFIER.search(pattern):
+        raise InvalidRegexPatternError(
+            "potential ReDoS: nested quantifiers detected",
+            f"pattern has nested quantifiers: {re2_pattern}",
+        )
+
+    depth = 0
+    max_depth = 0
+    for ch in pattern:
+        if ch == "(":
+            depth += 1
+            max_depth = max(max_depth, depth)
+        elif ch == ")":
+            depth -= 1
+    if max_depth > MAX_REGEX_NESTING:
+        raise InvalidRegexPatternError(
+            "regex nesting too deep",
+            f"pattern nesting depth {max_depth} exceeds limit {MAX_REGEX_NESTING}",
+        )
+
+    group_count = pattern.count("(") - pattern.count("(?:")
+    if group_count > MAX_REGEX_GROUPS:
+        raise InvalidRegexPatternError(
+            "too many regex groups",
+            f"pattern has {group_count} groups, limit is {MAX_REGEX_GROUPS}",
+        )
+
+    return pattern, case_insensitive
+
+
+def convert_re2_to_re2_native(re2_pattern: str) -> tuple[str, bool]:
+    """Convert RE2 pattern for dialects with native RE2 support (DuckDB, BigQuery).
+
+    Only validates and extracts (?i); no POSIX class conversion needed.
+    Non-capturing groups (?:) are converted to regular groups.
+    """
+    pattern, case_insensitive = _validate_regex_common(re2_pattern)
+    pattern = pattern.replace("(?:", "(")
+    return pattern, case_insensitive
+
+
+def convert_re2_to_mysql(re2_pattern: str) -> tuple[str, bool]:
+    """Convert RE2 pattern for MySQL (ICU regex engine).
+
+    MySQL 8.0+ ICU supports \\d, \\w, \\s, \\b natively.
+    Only (?:) needs conversion.
+    """
+    pattern, case_insensitive = _validate_regex_common(re2_pattern)
+    pattern = pattern.replace("(?:", "(")
+    return pattern, case_insensitive

@@ -21,12 +21,30 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.10",
 ]
+integration = [
+    "testcontainers[postgres]>=4.0",
+    "testcontainers[mysql]>=4.0",
+    "psycopg[binary]>=3.1",
+    "mysql-connector-python>=9.0",
+    "duckdb>=1.0",
+    "pytz>=2024.1",
+    "google-cloud-bigquery>=3.20",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pycel2sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: Integration tests against real databases",
+    "docker: Tests requiring Docker (PostgreSQL, MySQL)",
+    "postgres: PostgreSQL-specific tests",
+    "mysql: MySQL-specific tests",
+    "duckdb: DuckDB-specific tests",
+    "sqlite: SQLite-specific tests",
+    "bigquery: BigQuery-specific tests",
+]
 
 [tool.ruff]
 target-version = "py312"

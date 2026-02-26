@@ -1,45 +1,84 @@
-"""PostgreSQL dialect implementation."""
+"""BigQuery dialect implementation."""
 
 from __future__ import annotations
 
+import re
+
 from io import StringIO
 
-from pycel2sql._analysis_types import (
-    IndexPattern,
-    IndexRecommendation,
-    IndexType,
-    PatternType,
-)
-from pycel2sql._utils import convert_re2_to_posix, validate_field_name
+from pycel2sql._errors import InvalidFieldNameError
+from pycel2sql._utils import convert_re2_to_re2_native
 from pycel2sql.dialect._base import Dialect, WriteFunc
 
-# CEL type name -> PostgreSQL type name
+# BigQuery reserved keywords
+_BIGQUERY_RESERVED: set[str] = {
+    "all", "alter", "and", "any", "array", "as", "asc", "assert_rows_modified",
+    "at", "between", "by", "case", "cast", "collate", "contains", "create",
+    "cross", "cube", "current", "default", "define", "desc", "distinct",
+    "else", "end", "enum", "escape", "except", "exclude", "exists", "extract",
+    "false", "fetch", "following", "for", "from", "full", "group", "grouping",
+    "groups", "hash", "having", "if", "ignore", "in", "inner", "insert",
+    "intersect", "interval", "into", "is", "join", "lateral", "left", "like",
+    "limit", "lookup", "merge", "natural", "new", "no", "not", "null",
+    "nulls", "of", "on", "or", "order", "outer", "over", "partition",
+    "preceding", "proto", "range", "recursive", "respect", "right",
+    "rollup", "rows", "select", "set", "some", "struct", "tablesample",
+    "then", "to", "treat", "true", "unbounded", "union", "unnest", "using",
+    "when", "where", "window", "with", "within",
+}
+
+_FIELD_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+# CEL type name -> BigQuery type name
 _TYPE_MAP: dict[str, str] = {
-    "bool": "BOOLEAN",
-    "bytes": "BYTEA",
-    "double": "DOUBLE PRECISION",
-    "int": "BIGINT",
-    "uint": "BIGINT",
-    "string": "TEXT",
-    "timestamp": "TIMESTAMP WITH TIME ZONE",
+    "bool": "BOOL",
+    "bytes": "BYTES",
+    "double": "FLOAT64",
+    "int": "INT64",
+    "uint": "INT64",
+    "string": "STRING",
+    "timestamp": "TIMESTAMP",
+}
+
+# For ARRAY<TYPE>[] empty typed arrays
+_BQ_TYPE_NORMALIZE: dict[str, str] = {
+    "text": "STRING",
+    "string": "STRING",
+    "varchar": "STRING",
+    "int": "INT64",
+    "integer": "INT64",
+    "bigint": "INT64",
+    "int64": "INT64",
+    "double": "FLOAT64",
+    "float": "FLOAT64",
+    "real": "FLOAT64",
+    "float64": "FLOAT64",
+    "boolean": "BOOL",
+    "bool": "BOOL",
+    "bytes": "BYTES",
+    "bytea": "BYTES",
+    "blob": "BYTES",
 }
 
 
-class PostgresDialect(Dialect):
-    """PostgreSQL dialect for CEL-to-SQL conversion."""
+class BigQueryDialect(Dialect):
+    """BigQuery dialect for CEL-to-SQL conversion."""
 
     # --- Literals ---
 
     def write_string_literal(self, w: StringIO, value: str) -> None:
-        escaped = value.replace("'", "''")
+        escaped = value.replace("\\", "\\\\").replace("'", "\\'")
         w.write(f"'{escaped}'")
 
     def write_bytes_literal(self, w: StringIO, value: bytes) -> None:
-        hex_str = value.hex().upper()
-        w.write(f"'\\x{hex_str}'")
+        # BigQuery b"..." with octal encoding
+        parts = []
+        for byte in value:
+            parts.append(f"\\{byte:03o}")
+        w.write(f'b"{"".join(parts)}"')
 
     def write_param_placeholder(self, w: StringIO, param_index: int) -> None:
-        w.write(f"${param_index}")
+        w.write(f"@p{param_index}")
 
     # --- Operators ---
 
@@ -53,49 +92,53 @@ class PostgresDialect(Dialect):
     def write_regex_match(
         self, w: StringIO, write_target: WriteFunc, pattern: str, case_insensitive: bool
     ) -> None:
+        w.write("REGEXP_CONTAINS(")
         write_target()
+        w.write(", ")
         if case_insensitive:
-            w.write(" ~* ")
+            escaped = pattern.replace("\\", "\\\\").replace("'", "\\'")
+            w.write(f"'(?i){escaped}'")
         else:
-            w.write(" ~ ")
-        escaped = pattern.replace("'", "''")
-        w.write(f"'{escaped}'")
+            escaped = pattern.replace("\\", "\\\\").replace("'", "\\'")
+            w.write(f"'{escaped}'")
+        w.write(")")
 
     def write_like_escape(self, w: StringIO) -> None:
-        w.write(" ESCAPE E'\\\\'")
+        pass  # BigQuery uses backslash as default escape
 
     def write_array_membership(
         self, w: StringIO, write_elem: WriteFunc, write_array: WriteFunc
     ) -> None:
         write_elem()
-        w.write(" = ANY(")
+        w.write(" IN UNNEST(")
         write_array()
         w.write(")")
 
     # --- Type Casting ---
 
     def write_cast_to_numeric(self, w: StringIO, write_expr: WriteFunc) -> None:
+        w.write("CAST(")
         write_expr()
-        w.write("::numeric")
+        w.write(" AS FLOAT64)")
 
     def write_type_name(self, w: StringIO, cel_type_name: str) -> None:
         sql_type = _TYPE_MAP.get(cel_type_name, cel_type_name.upper())
         w.write(sql_type)
 
     def write_epoch_extract(self, w: StringIO, write_expr: WriteFunc) -> None:
-        w.write("EXTRACT(EPOCH FROM ")
+        w.write("UNIX_SECONDS(")
         write_expr()
-        w.write(")::bigint")
+        w.write(")")
 
     def write_timestamp_cast(self, w: StringIO, write_expr: WriteFunc) -> None:
         w.write("CAST(")
         write_expr()
-        w.write(" AS TIMESTAMP WITH TIME ZONE)")
+        w.write(" AS TIMESTAMP)")
 
     # --- Arrays ---
 
     def write_array_literal_open(self, w: StringIO) -> None:
-        w.write("ARRAY[")
+        w.write("[")
 
     def write_array_literal_close(self, w: StringIO) -> None:
         w.write("]")
@@ -103,80 +146,76 @@ class PostgresDialect(Dialect):
     def write_array_length(
         self, w: StringIO, dimension: int, write_expr: WriteFunc
     ) -> None:
-        w.write("COALESCE(ARRAY_LENGTH(")
+        w.write("ARRAY_LENGTH(")
         write_expr()
-        w.write(f", {dimension}), 0)")
+        w.write(")")
 
     def write_list_index(
         self, w: StringIO, write_array: WriteFunc, write_index: WriteFunc
     ) -> None:
         write_array()
-        w.write("[")
+        w.write("[OFFSET(")
         write_index()
-        w.write(" + 1]")
+        w.write(")]")
 
     def write_list_index_const(
         self, w: StringIO, write_array: WriteFunc, index: int
     ) -> None:
         write_array()
-        # Convert 0-based to 1-based
-        w.write(f"[{index + 1}]")
+        w.write(f"[OFFSET({index})]")
 
     def write_empty_typed_array(self, w: StringIO, type_name: str) -> None:
-        w.write(f"ARRAY[]::{type_name}[]")
+        bq_type = _BQ_TYPE_NORMALIZE.get(type_name.lower(), type_name.upper())
+        w.write(f"ARRAY<{bq_type}>[]")
 
     # --- JSON ---
 
     def write_json_field_access(
         self, w: StringIO, write_base: WriteFunc, field_name: str, is_final: bool
     ) -> None:
-        write_base()
-        escaped = field_name.replace("'", "''")
+        escaped = field_name.replace("\\", "\\\\").replace("'", "\\'")
         if is_final:
-            w.write(f"->>'{escaped}'")
+            w.write("JSON_VALUE(")
+            write_base()
+            w.write(f", '$.{escaped}')")
         else:
-            w.write(f"->'{escaped}'")
+            w.write("JSON_QUERY(")
+            write_base()
+            w.write(f", '$.{escaped}')")
 
     def write_json_existence(
         self, w: StringIO, is_jsonb: bool, field_name: str, write_base: WriteFunc
     ) -> None:
-        escaped = field_name.replace("'", "''")
-        if is_jsonb:
-            write_base()
-            w.write(f" ? '{escaped}'")
-        else:
-            write_base()
-            w.write(f"->'{escaped}' IS NOT NULL")
+        escaped = field_name.replace("\\", "\\\\").replace("'", "\\'")
+        w.write("JSON_VALUE(")
+        write_base()
+        w.write(f", '$.{escaped}') IS NOT NULL")
 
     def write_json_array_elements(
         self, w: StringIO, is_jsonb: bool, as_text: bool, write_expr: WriteFunc
     ) -> None:
-        if is_jsonb:
-            func = "jsonb_array_elements_text" if as_text else "jsonb_array_elements"
-        else:
-            func = "json_array_elements_text" if as_text else "json_array_elements"
-        w.write(f"{func}(")
+        w.write("UNNEST(JSON_QUERY_ARRAY(")
         write_expr()
-        w.write(")")
+        w.write("))")
 
     def write_json_array_length(self, w: StringIO, write_expr: WriteFunc) -> None:
-        w.write("COALESCE(jsonb_array_length(")
+        w.write("ARRAY_LENGTH(JSON_QUERY_ARRAY(")
         write_expr()
-        w.write("), 0)")
+        w.write("))")
 
     def write_json_array_membership(
         self, w: StringIO, json_func: str, write_expr: WriteFunc
     ) -> None:
-        w.write(f"ANY(ARRAY(SELECT {json_func}(")
+        w.write("UNNEST(JSON_VALUE_ARRAY(")
         write_expr()
-        w.write(")))")
+        w.write("))")
 
     def write_nested_json_array_membership(
         self, w: StringIO, write_expr: WriteFunc
     ) -> None:
-        w.write("ANY(ARRAY(SELECT jsonb_array_elements_text(")
+        w.write("UNNEST(JSON_VALUE_ARRAY(")
         write_expr()
-        w.write(")))")
+        w.write("))")
 
     # --- Timestamps ---
 
@@ -197,6 +236,8 @@ class PostgresDialect(Dialect):
         write_expr: WriteFunc,
         write_tz: WriteFunc | None,
     ) -> None:
+        if part == "DOW":
+            part = "DAYOFWEEK"
         w.write(f"EXTRACT({part} FROM ")
         write_expr()
         if write_tz is not None:
@@ -211,25 +252,34 @@ class PostgresDialect(Dialect):
         write_ts: WriteFunc,
         write_dur: WriteFunc,
     ) -> None:
-        write_ts()
-        w.write(f" {op} ")
-        write_dur()
+        if op == "+":
+            w.write("TIMESTAMP_ADD(")
+            write_ts()
+            w.write(", ")
+            write_dur()
+            w.write(")")
+        else:
+            w.write("TIMESTAMP_SUB(")
+            write_ts()
+            w.write(", ")
+            write_dur()
+            w.write(")")
 
     # --- String Functions ---
 
     def write_contains(
         self, w: StringIO, write_haystack: WriteFunc, write_needle: WriteFunc
     ) -> None:
-        w.write("POSITION(")
-        write_needle()
-        w.write(" IN ")
+        w.write("STRPOS(")
         write_haystack()
+        w.write(", ")
+        write_needle()
         w.write(") > 0")
 
     def write_split(
         self, w: StringIO, write_str: WriteFunc, write_delim: WriteFunc
     ) -> None:
-        w.write("STRING_TO_ARRAY(")
+        w.write("SPLIT(")
         write_str()
         w.write(", ")
         write_delim()
@@ -238,11 +288,12 @@ class PostgresDialect(Dialect):
     def write_split_with_limit(
         self, w: StringIO, write_str: WriteFunc, write_delim: WriteFunc, limit: int
     ) -> None:
-        w.write("(STRING_TO_ARRAY(")
+        # BigQuery doesn't have a native split with limit; use subquery approach
+        w.write("ARRAY(SELECT x FROM UNNEST(SPLIT(")
         write_str()
         w.write(", ")
         write_delim()
-        w.write(f"))[1:{limit}]")
+        w.write(f")) AS x WITH OFFSET WHERE OFFSET < {limit})")
 
     def write_join(
         self, w: StringIO, write_array: WriteFunc, write_delim: WriteFunc
@@ -251,7 +302,7 @@ class PostgresDialect(Dialect):
         write_array()
         w.write(", ")
         write_delim()
-        w.write(", '')")
+        w.write(")")
 
     # --- Comprehensions ---
 
@@ -264,17 +315,17 @@ class PostgresDialect(Dialect):
         w.write("ARRAY(SELECT ")
 
     def write_array_subquery_expr_close(self, w: StringIO) -> None:
-        pass  # No-op for PostgreSQL
+        pass  # No-op for BigQuery
 
     # --- Regex ---
 
     def convert_regex(self, re2_pattern: str) -> tuple[str, bool]:
-        return convert_re2_to_posix(re2_pattern)
+        return convert_re2_to_re2_native(re2_pattern)
 
     # --- Struct ---
 
     def write_struct_open(self, w: StringIO) -> None:
-        w.write("ROW(")
+        w.write("STRUCT(")
 
     def write_struct_close(self, w: StringIO) -> None:
         w.write(")")
@@ -282,10 +333,29 @@ class PostgresDialect(Dialect):
     # --- Validation ---
 
     def max_identifier_length(self) -> int:
-        return 63
+        return 300
 
     def validate_field_name(self, name: str) -> None:
-        validate_field_name(name)
+        if not name:
+            raise InvalidFieldNameError(
+                "field name cannot be empty",
+                "empty field name provided",
+            )
+        if len(name) > 300:
+            raise InvalidFieldNameError(
+                "field name too long",
+                f"field name '{name}' exceeds 300 characters",
+            )
+        if not _FIELD_NAME_RE.match(name):
+            raise InvalidFieldNameError(
+                "invalid field name format",
+                f"field name '{name}' contains invalid characters",
+            )
+        if name.lower() in _BIGQUERY_RESERVED:
+            raise InvalidFieldNameError(
+                "field name is a reserved SQL keyword",
+                f"field name '{name}' is a reserved BigQuery keyword",
+            )
 
     # --- Capabilities ---
 
@@ -293,63 +363,4 @@ class PostgresDialect(Dialect):
         return True
 
     def supports_jsonb(self) -> bool:
-        return True
-
-    # --- Index Advisor ---
-
-    def recommend_index(self, pattern: IndexPattern) -> IndexRecommendation | None:
-        col = pattern.column
-        table = pattern.table_hint or "table_name"
-
-        if pattern.pattern == PatternType.COMPARISON:
-            return IndexRecommendation(
-                column=col,
-                index_type=IndexType.BTREE,
-                expression=f"CREATE INDEX idx_{table}_{col} ON {table} ({col})",
-                reason=f"BTree index for comparison operations on {col}",
-            )
-        if pattern.pattern == PatternType.JSON_ACCESS:
-            return IndexRecommendation(
-                column=col,
-                index_type=IndexType.GIN,
-                expression=f"CREATE INDEX idx_{table}_{col}_gin ON {table} USING GIN ({col})",
-                reason=f"GIN index for JSON access on {col}",
-            )
-        if pattern.pattern == PatternType.REGEX_MATCH:
-            return IndexRecommendation(
-                column=col,
-                index_type=IndexType.GIN,
-                expression=(
-                    f"CREATE INDEX idx_{table}_{col}_trgm ON {table} "
-                    f"USING GIN ({col} gin_trgm_ops)"
-                ),
-                reason=f"GIN index with pg_trgm for regex matching on {col}",
-            )
-        if pattern.pattern == PatternType.ARRAY_MEMBERSHIP:
-            return IndexRecommendation(
-                column=col,
-                index_type=IndexType.GIN,
-                expression=f"CREATE INDEX idx_{table}_{col}_gin ON {table} USING GIN ({col})",
-                reason=f"GIN index for array membership on {col}",
-            )
-        if pattern.pattern in (
-            PatternType.ARRAY_COMPREHENSION,
-            PatternType.JSON_ARRAY_COMPREHENSION,
-        ):
-            return IndexRecommendation(
-                column=col,
-                index_type=IndexType.GIN,
-                expression=f"CREATE INDEX idx_{table}_{col}_gin ON {table} USING GIN ({col})",
-                reason=f"GIN index for comprehension on {col}",
-            )
-        return None
-
-    def supported_patterns(self) -> list[PatternType]:
-        return [
-            PatternType.COMPARISON,
-            PatternType.JSON_ACCESS,
-            PatternType.REGEX_MATCH,
-            PatternType.ARRAY_MEMBERSHIP,
-            PatternType.ARRAY_COMPREHENSION,
-            PatternType.JSON_ARRAY_COMPREHENSION,
-        ]
+        return False
