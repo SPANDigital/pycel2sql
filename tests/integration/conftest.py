@@ -303,6 +303,11 @@ _BQ_IMAGE = "ghcr.io/goccy/bigquery-emulator:latest"
 
 @pytest.fixture(scope="session")
 def bq_container():
+    # BigQuery emulator is opt-in: set PYCEL2SQL_TEST_BIGQUERY=1 to enable.
+    # The emulator can be unreliable (some queries hang), so it is excluded
+    # from default CI runs.
+    if not os.environ.get("PYCEL2SQL_TEST_BIGQUERY"):
+        pytest.skip("BigQuery tests disabled (set PYCEL2SQL_TEST_BIGQUERY=1 to enable)")
     if not CONTAINER_RUNTIME_AVAILABLE:
         pytest.skip("No container runtime (Docker/Podman) available")
     # BigQuery emulator only has amd64 images; the Go runtime crashes under
