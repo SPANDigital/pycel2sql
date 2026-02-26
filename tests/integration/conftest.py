@@ -298,6 +298,9 @@ def mysql_container():
         yield mysql
 
 
+_BQ_IMAGE = "ghcr.io/goccy/bigquery-emulator:latest"
+
+
 @pytest.fixture(scope="session")
 def bq_container():
     if not CONTAINER_RUNTIME_AVAILABLE:
@@ -308,10 +311,21 @@ def bq_container():
         pytest.skip(
             f"BigQuery emulator requires x86_64 (current: {platform.machine()})"
         )
+    # Pre-pull with a timeout so we don't hang CI for 10+ minutes when
+    # ghcr.io is unreachable.
+    runtime = "docker" if shutil.which("docker") else "podman"
+    try:
+        subprocess.run(
+            [runtime, "pull", _BQ_IMAGE],
+            timeout=120, check=True, capture_output=True,
+        )
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as exc:
+        pytest.skip(f"Could not pull BigQuery emulator image: {exc}")
+
     from testcontainers.core.container import DockerContainer
     from testcontainers.core.waiting_utils import wait_for_logs
     container = (
-        DockerContainer("ghcr.io/goccy/bigquery-emulator:latest")
+        DockerContainer(_BQ_IMAGE)
         .with_exposed_ports(9050)
         .with_command("--project=test-project --dataset=test_dataset")
     )
@@ -323,7 +337,7 @@ def bq_container():
             container.stop()
         except Exception:
             pass
-        pytest.skip(f"BigQuery emulator unavailable: {exc}")
+        pytest.skip(f"BigQuery emulator failed to start: {exc}")
     yield container
     container.stop()
 
