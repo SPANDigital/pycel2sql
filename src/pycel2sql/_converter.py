@@ -16,9 +16,11 @@ from pycel2sql._constants import (
     MAX_COMPREHENSION_DEPTH,
 )
 from pycel2sql._errors import (
+    ERR_MSG_SCHEMA_VALIDATION_FAILED,
     InvalidArgumentsError,
     InvalidByteArrayLengthError,
     InvalidDurationError,
+    InvalidSchemaError,
     MaxComprehensionDepthExceededError,
     MaxDepthExceededError,
     MaxOutputLengthExceededError,
@@ -145,6 +147,7 @@ class Converter(Interpreter):
         max_depth: int = DEFAULT_MAX_RECURSION_DEPTH,
         max_output_length: int = DEFAULT_MAX_SQL_OUTPUT_LENGTH,
         parameterize: bool = False,
+        validate_schema: bool = False,
     ) -> None:
         self._w = StringIO()
         self._dialect = dialect
@@ -157,6 +160,12 @@ class Converter(Interpreter):
         self._parameters: list[Any] = []
         self._param_count = 0
         self._comprehension_vars: set[str] = set()
+        self._validate_schema = validate_schema
+        if self._validate_schema and not self._schemas:
+            raise InvalidSchemaError(
+                ERR_MSG_SCHEMA_VALIDATION_FAILED,
+                "validate_schema=True requires at least one schema to be provided",
+            )
 
     @property
     def result(self) -> str:
@@ -580,6 +589,12 @@ class Converter(Interpreter):
 
         # Check for JSON path
         table_name = self._get_root_ident(obj)
+
+        # Schema validation (before JSON check and SQL writing)
+        if table_name and not self._is_comprehension_var(table_name):
+            first_field = self._get_first_field(obj, field_name)
+            self._validate_field_in_schema(table_name, first_field)
+
         if table_name and self._is_field_json(table_name, self._get_first_field(obj, field_name)):
             self._build_json_path(tree)
             return
@@ -1728,6 +1743,25 @@ class Converter(Interpreter):
         return self._is_nested_json_field(node)
 
     # ---- Schema helpers ----
+
+    def _validate_field_in_schema(self, table_name: str, field_name: str) -> None:
+        """Validate that a field exists in the schema for a table.
+
+        No-op if validate_schema is False.
+        """
+        if not self._validate_schema:
+            return
+        schema = self._schemas.get(table_name)
+        if schema is None:
+            raise InvalidSchemaError(
+                ERR_MSG_SCHEMA_VALIDATION_FAILED,
+                f"table '{table_name}' not found in schemas",
+            )
+        if schema.find_field(field_name) is None:
+            raise InvalidSchemaError(
+                ERR_MSG_SCHEMA_VALIDATION_FAILED,
+                f"field '{field_name}' not found in schema for '{table_name}'",
+            )
 
     def _is_member_dot_array_field(self, tree: Tree) -> bool:
         """Check if a tree represents an array field via schema."""
