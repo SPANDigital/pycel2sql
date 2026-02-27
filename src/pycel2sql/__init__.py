@@ -13,7 +13,7 @@ from typing import Any
 from celpy.celparser import CELParser
 
 from pycel2sql._converter import Converter
-from pycel2sql._errors import ConversionError, IntrospectionError
+from pycel2sql._errors import ConversionError, IntrospectionError, InvalidSchemaError
 from pycel2sql.dialect._base import Dialect
 from pycel2sql.dialect.bigquery import BigQueryDialect
 from pycel2sql.dialect.duckdb import DuckDBDialect
@@ -32,6 +32,7 @@ __all__ = [
     "Result",
     "ConversionError",
     "IntrospectionError",
+    "InvalidSchemaError",
     "Dialect",
     "BigQueryDialect",
     "DuckDBDialect",
@@ -58,6 +59,7 @@ def convert(
     schemas: dict[str, Schema] | None = None,
     max_depth: int | None = None,
     max_output_length: int | None = None,
+    validate_schema: bool = False,
 ) -> str:
     """Convert a CEL expression to an inline SQL WHERE clause string.
 
@@ -67,12 +69,15 @@ def convert(
         schemas: Optional table schemas for JSON/array field detection.
         max_depth: Maximum recursion depth. Defaults to 100.
         max_output_length: Maximum SQL output length. Defaults to 50000.
+        validate_schema: If True, raise InvalidSchemaError for unrecognized
+            table or field references. Requires schemas to be provided.
 
     Returns:
         The SQL WHERE clause string.
 
     Raises:
         ConversionError: If conversion fails.
+        InvalidSchemaError: If validate_schema is True and a field is not in the schema.
     """
     if dialect is None:
         dialect = PostgresDialect()
@@ -86,6 +91,8 @@ def convert(
         kwargs["max_depth"] = max_depth
     if max_output_length is not None:
         kwargs["max_output_length"] = max_output_length
+    if validate_schema:
+        kwargs["validate_schema"] = validate_schema
 
     converter = Converter(dialect, **kwargs)
     converter.visit(tree)
@@ -99,6 +106,7 @@ def convert_parameterized(
     schemas: dict[str, Schema] | None = None,
     max_depth: int | None = None,
     max_output_length: int | None = None,
+    validate_schema: bool = False,
 ) -> Result:
     """Convert a CEL expression to a parameterized SQL WHERE clause.
 
@@ -108,12 +116,15 @@ def convert_parameterized(
         schemas: Optional table schemas for JSON/array field detection.
         max_depth: Maximum recursion depth. Defaults to 100.
         max_output_length: Maximum SQL output length. Defaults to 50000.
+        validate_schema: If True, raise InvalidSchemaError for unrecognized
+            table or field references. Requires schemas to be provided.
 
     Returns:
         Result with SQL containing $1, $2, ... placeholders and parameter list.
 
     Raises:
         ConversionError: If conversion fails.
+        InvalidSchemaError: If validate_schema is True and a field is not in the schema.
     """
     if dialect is None:
         dialect = PostgresDialect()
@@ -127,6 +138,8 @@ def convert_parameterized(
         kwargs["max_depth"] = max_depth
     if max_output_length is not None:
         kwargs["max_output_length"] = max_output_length
+    if validate_schema:
+        kwargs["validate_schema"] = validate_schema
 
     converter = Converter(dialect, **kwargs)
     converter.visit(tree)
@@ -148,6 +161,7 @@ def analyze(
     schemas: dict[str, Schema] | None = None,
     max_depth: int | None = None,
     max_output_length: int | None = None,
+    validate_schema: bool = False,
 ) -> AnalysisResult:
     """Analyze a CEL expression for SQL conversion and index recommendations.
 
@@ -157,9 +171,14 @@ def analyze(
         schemas: Optional table schemas for JSON/array field detection.
         max_depth: Maximum recursion depth.
         max_output_length: Maximum SQL output length.
+        validate_schema: If True, raise InvalidSchemaError for unrecognized
+            table or field references. Requires schemas to be provided.
 
     Returns:
         AnalysisResult with SQL and index recommendations.
+
+    Raises:
+        InvalidSchemaError: If validate_schema is True and a field is not in the schema.
     """
     from pycel2sql._analysis import analyze_patterns
     from pycel2sql.dialect._base import get_index_advisor
@@ -177,6 +196,8 @@ def analyze(
         kwargs["max_depth"] = max_depth
     if max_output_length is not None:
         kwargs["max_output_length"] = max_output_length
+    if validate_schema:
+        kwargs["validate_schema"] = validate_schema
 
     converter = Converter(dialect, **kwargs)
     converter.visit(tree)

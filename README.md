@@ -103,6 +103,38 @@ sql = convert(
 # => usr.metadata->>'role' = 'admin'
 ```
 
+## Schema Validation
+
+Enable strict validation to catch typos and references to nonexistent fields:
+
+```python
+from pycel2sql import convert, InvalidSchemaError
+from pycel2sql.schema import Schema, FieldSchema
+
+schemas = {
+    "usr": Schema([
+        FieldSchema("name"),
+        FieldSchema("age", type="integer"),
+        FieldSchema("metadata", is_jsonb=True),
+    ])
+}
+
+# Valid field — works normally
+sql = convert('usr.name == "alice"', schemas=schemas, validate_schema=True)
+
+# Unknown field — raises InvalidSchemaError
+convert('usr.email == "test"', schemas=schemas, validate_schema=True)
+# => InvalidSchemaError: field not found in schema
+```
+
+Validation scope:
+- **Validates**: `table.field` references — table must exist in `schemas`, field must exist in that table's `Schema`
+- **Skips**: Nested JSON paths beyond the first field (e.g., `usr.metadata.settings.theme` validates `metadata` exists, not `settings`)
+- **Skips**: Comprehension variables (`t` in `tags.all(t, t > 0)`)
+- **Skips**: Bare identifiers without a table prefix (`age > 10`)
+
+Works with all three public API functions: `convert()`, `convert_parameterized()`, and `analyze()`.
+
 ## Schema Introspection
 
 Auto-discover table schemas from a live database connection instead of building `Schema` objects manually:

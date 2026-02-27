@@ -96,4 +96,5 @@ Unit tests (`tests/test_*.py`) cover each feature area per dialect. Integration 
 - `size()` dispatches to `ARRAY_LENGTH` for arrays, `LENGTH` for strings
 - Depth tracking: `_visit_child()` increments/decrements `_depth` and checks limits
 - Error types use dual messaging pattern to prevent information disclosure (CWE-209)
+- `validate_schema` parameter: opt-in strict validation on `convert()`/`convert_parameterized()`/`analyze()`. Validates `table.field` references exist in schemas; skips comprehension variables, bare identifiers, and nested JSON keys beyond the first field. Raises `InvalidSchemaError` (with dual messaging). Requires schemas to be provided.
 - Ruff for linting, mypy strict for type checking, line length 100, target Python 3.12+
