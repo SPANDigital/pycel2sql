@@ -92,6 +92,46 @@ sql = convert(
 # => usr.metadata->>'role' = 'admin'
 ```
 
+## Schema Introspection
+
+Auto-discover table schemas from a live database connection instead of building `Schema` objects manually:
+
+```python
+from pycel2sql import convert, introspect
+from pycel2sql.dialect.postgres import PostgresDialect
+import psycopg
+
+conn = psycopg.connect("postgresql://localhost/mydb")
+
+# Introspect specific tables — detects JSON, JSONB, and array columns
+schemas = introspect("postgresql", conn, table_names=["users", "orders"])
+
+sql = convert(
+    'users.metadata.role == "admin"',
+    dialect=PostgresDialect(),
+    schemas=schemas,
+)
+# => users.metadata->>'role' = 'admin'
+```
+
+Per-dialect functions are also available:
+
+```python
+from pycel2sql.introspect import introspect_postgres, introspect_sqlite
+
+# PostgreSQL — detects JSONB, JSON, and ARRAY columns
+schemas = introspect_postgres(conn, table_names=["users"], schema_name="public")
+
+# SQLite — explicit json_columns since SQLite has no JSON type
+schemas = introspect_sqlite(
+    conn,
+    table_names=["events"],
+    json_columns={"events": ["payload", "tags"]},
+)
+```
+
+All five dialects are supported: `introspect_postgres`, `introspect_duckdb`, `introspect_bigquery`, `introspect_mysql`, `introspect_sqlite`.
+
 ## Supported CEL Features
 
 - **Comparisons**: `==`, `!=`, `<`, `<=`, `>`, `>=`

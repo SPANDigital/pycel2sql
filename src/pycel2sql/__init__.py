@@ -13,22 +13,25 @@ from typing import Any
 from celpy.celparser import CELParser
 
 from pycel2sql._converter import Converter
-from pycel2sql._errors import ConversionError
+from pycel2sql._errors import ConversionError, IntrospectionError
 from pycel2sql.dialect._base import Dialect
 from pycel2sql.dialect.bigquery import BigQueryDialect
 from pycel2sql.dialect.duckdb import DuckDBDialect
 from pycel2sql.dialect.mysql import MySQLDialect
 from pycel2sql.dialect.postgres import PostgresDialect
 from pycel2sql.dialect.sqlite import SQLiteDialect
+from pycel2sql.introspect import introspect
 from pycel2sql.schema import Schema
 
 __all__ = [
     "analyze",
     "convert",
     "convert_parameterized",
+    "introspect",
     "AnalysisResult",
     "Result",
     "ConversionError",
+    "IntrospectionError",
     "Dialect",
     "BigQueryDialect",
     "DuckDBDialect",

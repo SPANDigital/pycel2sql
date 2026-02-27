@@ -91,6 +91,10 @@ class UnsupportedDialectFeatureError(ConversionError):
     """Raised when a feature is not supported by the dialect."""
 
 
+class IntrospectionError(ConversionError):
+    """Raised when schema introspection fails."""
+
+
 # Sanitized user-facing error message constants
 ERR_MSG_UNSUPPORTED_EXPRESSION = "unsupported expression type"
 ERR_MSG_INVALID_OPERATOR = "invalid operator"

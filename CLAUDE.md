@@ -65,7 +65,7 @@ Lark grammar rule names encode operators: `relation_eq`, `addition_add`, `multip
 
 | Module | Role |
 |--------|------|
-| `__init__.py` | Public API: `convert()`, `convert_parameterized()`, `analyze()` |
+| `__init__.py` | Public API: `convert()`, `convert_parameterized()`, `analyze()`, `introspect()` |
 | `_converter.py` | Core Converter — Lark Interpreter with visitor methods for every grammar rule |
 | `dialect/_base.py` | `Dialect` ABC (40+ abstract methods), `WriteFunc` type alias, `IndexAdvisor` protocol |
 | `dialect/{postgres,duckdb,bigquery,mysql,sqlite}.py` | Concrete dialect implementations |
@@ -74,6 +74,7 @@ Lark grammar rule names encode operators: `relation_eq`, `addition_add`, `multip
 | `_utils.py` | Validation, escaping, RE2→SQL regex conversion |
 | `_errors.py` | `ConversionError` hierarchy with dual messaging (sanitized user + internal detail) |
 | `_constants.py` | Resource limits (max depth 100, max output 50KB, etc.) |
+| `introspect/` | Schema introspection — auto-discover `Schema` from live DB connections (one module per dialect) |
 
 ### Dialect Differences
 
