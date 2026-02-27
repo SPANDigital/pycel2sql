@@ -1,5 +1,10 @@
 # pycel2sql
 
+[![CI](https://github.com/SPANDigital/pycel2sql/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SPANDigital/pycel2sql/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/pycel2sql)](https://pypi.org/project/pycel2sql/)
+[![Python](https://img.shields.io/pypi/pyversions/pycel2sql)](https://pypi.org/project/pycel2sql/)
+[![License: MIT](https://img.shields.io/pypi/l/pycel2sql)](https://github.com/SPANDigital/pycel2sql/blob/main/LICENSE)
+
 Convert [CEL (Common Expression Language)](https://cel.dev/) expressions to SQL WHERE clauses.
 
 Python port of [cel2sql](https://github.com/SPANDigital/cel2sql) (Go).
