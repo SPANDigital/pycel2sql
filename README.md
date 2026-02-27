@@ -5,6 +5,12 @@
 [![Python](https://img.shields.io/pypi/pyversions/pycel2sql)](https://pypi.org/project/pycel2sql/)
 [![License: MIT](https://img.shields.io/pypi/l/pycel2sql)](https://github.com/SPANDigital/pycel2sql/blob/main/LICENSE)
 
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![DuckDB](https://img.shields.io/badge/DuckDB-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org/)
+[![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white)](https://cloud.google.com/bigquery)
+[![MySQL](https://img.shields.io/badge/MySQL-4479A1?logo=mysql&logoColor=white)](https://www.mysql.com/)
+[![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+
 Convert [CEL (Common Expression Language)](https://cel.dev/) expressions to SQL WHERE clauses.
 
 Python port of [cel2sql](https://github.com/SPANDigital/cel2sql) (Go).
