@@ -148,6 +148,9 @@ class Converter(Interpreter):
         max_output_length: int = DEFAULT_MAX_SQL_OUTPUT_LENGTH,
         parameterize: bool = False,
         validate_schema: bool = False,
+        json_variables: frozenset[str] | None = None,
+        column_aliases: dict[str, str] | None = None,
+        param_start_index: int = 1,
     ) -> None:
         self._w = StringIO()
         self._dialect = dialect
@@ -158,9 +161,11 @@ class Converter(Interpreter):
         self._comprehension_depth = 0
         self._parameterize = parameterize
         self._parameters: list[Any] = []
-        self._param_count = 0
+        self._param_count = max(1, param_start_index) - 1
         self._comprehension_vars: set[str] = set()
         self._validate_schema = validate_schema
+        self._json_variables: frozenset[str] = json_variables or frozenset()
+        self._column_aliases: dict[str, str] = column_aliases or {}
         if self._validate_schema and not self._schemas:
             raise InvalidSchemaError(
                 ERR_MSG_SCHEMA_VALIDATION_FAILED,
@@ -590,6 +595,13 @@ class Converter(Interpreter):
         # Check for JSON path
         table_name = self._get_root_ident(obj)
 
+        # If the root identifier is declared as a flat JSONB variable, route to
+        # JSON-path emission (skip schema validation — the caller declared it
+        # JSONB explicitly).
+        if self._is_json_variable_root(table_name):
+            self._build_json_path(tree)
+            return
+
         # Schema validation (before JSON check and SQL writing)
         if table_name and not self._is_comprehension_var(table_name):
             first_field = self._get_first_field(obj, field_name)
@@ -701,6 +713,12 @@ class Converter(Interpreter):
         if index_literal and _is_string_token(index_literal):
             raw_key = _strip_quotes(str(index_literal))
             validate_field_name(raw_key)
+            # If the indexed object's root is declared as a flat JSONB
+            # variable, emit JSON-path extraction instead of plain dot access.
+            root = self._get_root_ident(obj)
+            if self._is_json_variable_root(root):
+                self._emit_json_path(obj, [raw_key], root_is_column=True)
+                return
             self._visit_child(obj)
             self._w.write(f".{raw_key}")
             return
@@ -749,10 +767,13 @@ class Converter(Interpreter):
     def ident(self, tree: Tree) -> None:
         """Bare identifier."""
         name = str(tree.children[0])
-        # Don't validate comprehension iteration variables
-        if not self._is_comprehension_var(name):
-            validate_field_name(name)
-        self._w.write(name)
+        # Don't validate or alias comprehension iteration variables
+        if self._is_comprehension_var(name):
+            self._w.write(name)
+            return
+        resolved = self._column_aliases.get(name, name)
+        validate_field_name(resolved)
+        self._w.write(resolved)
 
     def ident_arg(self, tree: Tree) -> None:
         """Function call: func(args)."""
@@ -1302,23 +1323,23 @@ class Converter(Interpreter):
                     f"format specifier %{spec} cannot be converted to SQL",
                 )
 
-        # Convert %d, %f etc. to %s for SQL FORMAT()
+        # Convert %d, %f etc. to %s for printf-style dialects
         sql_fmt = re.sub(r"%([dfoFeEgG])", "%s", raw_fmt)
 
         # Get the argument list
         arg_list = args[0]
         list_node = _unwrap_to_data(arg_list, "list_lit")
 
-        self._w.write("FORMAT(")
-        self._dialect.write_string_literal(self._w, sql_fmt)
-
+        write_args: list[Any] = []
         if list_node is not None and list_node.children:
             exprlist = list_node.children[0]
             if isinstance(exprlist, Tree) and exprlist.data == "exprlist":
                 for child in exprlist.children:
-                    self._w.write(", ")
-                    self._visit_child(child)
-        self._w.write(")")
+                    write_args.append(
+                        (lambda c=child: self._visit_child(c))  # noqa: B023
+                    )
+
+        self._dialect.write_format(self._w, sql_fmt, write_args)
 
     # ---- has() function ----
 
@@ -1331,6 +1352,20 @@ class Converter(Interpreter):
         if member_dot:
             table_name = self._get_root_ident(member_dot.children[0])
             field_name = str(member_dot.children[1])
+            # Single-level has() against a flat JSONB variable:
+            # has(context.host) -> dialect-specific JSON existence check.
+            if (
+                self._is_json_variable_root(table_name)
+                and _unwrap_to_data(member_dot.children[0], "member_dot") is None
+            ):
+                operand = member_dot.children[0]
+                self._dialect.write_json_existence(
+                    self._w,
+                    True,
+                    field_name,
+                    lambda: self._visit_child(operand),
+                )
+                return
             # Check if the parent object (not the field itself) is a JSON field
             # e.g., has(usr.metadata.key) -> usr.metadata ? 'key'
             # but has(usr.metadata) -> usr.metadata IS NOT NULL
@@ -1656,6 +1691,19 @@ class Converter(Interpreter):
 
     # ---- JSON support ----
 
+    def _is_json_variable_root(self, name: str | None) -> bool:
+        """Return True if name is a CEL variable declared as flat JSONB.
+
+        Comprehension iter vars shadow json_variables — a json_variable that
+        collides with a comprehension variable is treated as a non-JSON ident
+        inside the comprehension body.
+        """
+        if not name:
+            return False
+        if self._is_comprehension_var(name):
+            return False
+        return name in self._json_variables
+
     def _is_field_json(self, table_name: str, field_name: str) -> bool:
         schema = self._schemas.get(table_name)
         if not schema:
@@ -1695,26 +1743,56 @@ class Converter(Interpreter):
 
         parts.reverse()
 
-        # node should now be the root ident
-        # First part after root is the JSON column, rest are path segments
-        if len(parts) < 2:
-            # Simple field access
-            self._visit_child(node)
-            self._w.write(f".{parts[0]}")
+        root_node = node
+        root_is_json_column = self._is_json_variable_root(self._get_root_ident(root_node))
+        self._emit_json_path(root_node, parts, root_is_column=root_is_json_column)
+
+    def _emit_json_path(
+        self,
+        root_node: Tree | Token,
+        parts: list[str],
+        *,
+        root_is_column: bool,
+    ) -> None:
+        """Emit a JSON path expression for a (root, parts) chain.
+
+        When root_is_column is True, the root ident IS the JSON column and
+        every entry in parts is a JSON key. Otherwise the first entry of parts
+        is the JSON column on the table and the remainder are JSON keys.
+        """
+        # Bind the root visitor once; visit() already handles bare tokens.
+        def visit_root() -> None:
+            if isinstance(root_node, Tree):
+                self._visit_child(root_node)
+            else:
+                self._w.write(str(root_node))
+
+        if not parts:
+            visit_root()
             return
 
-        root_node = node
-        json_col = parts[0]
+        if root_is_column:
+            # Root ident is the JSON column. All parts are JSON keys.
+            write_base = visit_root
+            key_parts = parts
+        else:
+            # Schema-driven: first part is the JSON column on the table.
+            json_col = parts[0]
 
-        # Callback that writes "root.json_column"
-        def write_base() -> None:
-            self._visit_child(root_node)
-            self._w.write(f".{json_col}")
+            def write_base() -> None:
+                visit_root()
+                self._w.write(f".{json_col}")
 
-        # Chain through path segments with real callbacks
+            key_parts = parts[1:]
+            if not key_parts:
+                # Simple table.json_col field access — emit as plain ident.
+                write_base()
+                return
+
+        # Chain through key segments with real callbacks
         current_base = write_base
-        for i, part in enumerate(parts[1:]):
-            is_final = i == len(parts) - 2
+        for i, part in enumerate(key_parts):
+            is_final = i == len(key_parts) - 1
 
             if is_final:
                 self._dialect.write_json_field_access(

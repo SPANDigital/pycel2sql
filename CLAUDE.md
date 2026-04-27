@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Does
 
-pycel2sql converts CEL (Common Expression Language) expressions into SQL WHERE clauses. It supports five SQL dialects: PostgreSQL, DuckDB, BigQuery, MySQL, and SQLite.
+pycel2sql converts CEL (Common Expression Language) expressions into SQL WHERE clauses. It supports six SQL dialects: PostgreSQL, DuckDB, BigQuery, MySQL, SQLite, and Apache Spark.
 
 ## Commands
 
@@ -68,7 +68,7 @@ Lark grammar rule names encode operators: `relation_eq`, `addition_add`, `multip
 | `__init__.py` | Public API: `convert()`, `convert_parameterized()`, `analyze()`, `introspect()` |
 | `_converter.py` | Core Converter — Lark Interpreter with visitor methods for every grammar rule |
 | `dialect/_base.py` | `Dialect` ABC (40+ abstract methods), `WriteFunc` type alias, `IndexAdvisor` protocol |
-| `dialect/{postgres,duckdb,bigquery,mysql,sqlite}.py` | Concrete dialect implementations |
+| `dialect/{postgres,duckdb,bigquery,mysql,sqlite,spark}.py` | Concrete dialect implementations |
 | `schema.py` | `Schema` / `FieldSchema` for JSON/array field detection |
 | `_analysis.py` | `IndexAnalyzer` — second-pass tree walker for index recommendations |
 | `_utils.py` | Validation, escaping, RE2→SQL regex conversion |
@@ -78,11 +78,12 @@ Lark grammar rule names encode operators: `relation_eq`, `addition_add`, `multip
 
 ### Dialect Differences
 
-- **PostgreSQL**: `$N` params, `ARRAY[...]`, `~ / ~*` regex, `->>/->` JSON, `POSITION()` for contains
-- **DuckDB**: `$N` params, `[...]` arrays, RE2 regex, `CONTAINS()`, `STRING_SPLIT()`
-- **BigQuery**: `@pN` params, `[...]` arrays, `REGEXP_CONTAINS()`, `JSON_VALUE()`, `TIMESTAMP_ADD/SUB()`
-- **MySQL**: `?` params, `JSON_ARRAY()`, `REGEXP`, `JSON_TABLE()` for unnest
-- **SQLite**: `?` params, `json_array()`, no regex/split/join, `json_each()` for unnest
+- **PostgreSQL**: `$N` params, `ARRAY[...]`, `~ / ~*` regex, `->>/->` JSON, `POSITION()` for contains, `FORMAT()`
+- **DuckDB**: `$N` params, `[...]` arrays, RE2 regex, `CONTAINS()`, `STRING_SPLIT()`, `printf()`
+- **BigQuery**: `@pN` params, `[...]` arrays, `REGEXP_CONTAINS()`, `JSON_VALUE()`, `TIMESTAMP_ADD/SUB()`, `FORMAT()`
+- **MySQL**: `?` params, `JSON_ARRAY()`, `REGEXP`, `JSON_TABLE()` for unnest, `format()` raises `UnsupportedDialectFeatureError`
+- **SQLite**: `?` params, `json_array()`, no regex/split/join, `json_each()` for unnest, `printf()`
+- **Apache Spark**: `?` positional params, `array(...)`, `RLIKE`, `get_json_object()`, `concat()`, `array_contains(arr, elem)` (arg order swap), `EXPLODE` / `(SELECT collect_list(...))`, `format_string()`, `(dayofweek(t) - 1)` for day-of-week, JSON array membership raises (no boolean predicate available)
 
 ### Test Organization
 
@@ -97,4 +98,8 @@ Unit tests (`tests/test_*.py`) cover each feature area per dialect. Integration 
 - Depth tracking: `_visit_child()` increments/decrements `_depth` and checks limits
 - Error types use dual messaging pattern to prevent information disclosure (CWE-209)
 - `validate_schema` parameter: opt-in strict validation on `convert()`/`convert_parameterized()`/`analyze()`. Validates `table.field` references exist in schemas; skips comprehension variables, bare identifiers, and nested JSON keys beyond the first field. Raises `InvalidSchemaError` (with dual messaging). Requires schemas to be provided.
+- `json_variables` parameter: opt-in declaration that named CEL variables are flat JSONB columns. Field access (dot or bracket) emits dialect-specific JSON extraction. Takes precedence over schema-declared JSON. Comprehension iter vars shadow `json_variables` (collisions are not treated as JSON inside the comprehension body).
+- `column_aliases` parameter: maps CEL identifier names to SQL column names. The alias is validated against the dialect's identifier rules; the original CEL name remains the schema key (alias is output-only).
+- `param_start_index` parameter (only on `convert_parameterized()`): shifts the placeholder counter so the first parameter is `$N` / `@pN` instead of `$1` / `@p1`. Values < 1 are clamped to 1. Positional-`?` dialects (MySQL, SQLite, Spark) ignore the index in placeholder text but still preserve parameter ordering.
+- `format()` is dispatched per-dialect via `Dialect.write_format`: PostgreSQL/BigQuery emit `FORMAT(...)`, SQLite/DuckDB emit `printf(...)`, Apache Spark emits `format_string(...)`, MySQL raises `UnsupportedDialectFeatureError`.
 - Ruff for linting, mypy strict for type checking, line length 100, target Python 3.12+

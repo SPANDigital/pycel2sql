@@ -22,6 +22,7 @@ class DialectName(enum.StrEnum):
     SQLITE = "sqlite"
     DUCKDB = "duckdb"
     BIGQUERY = "bigquery"
+    SPARK = "spark"
 
 
 WriteFunc = Callable[[], None]
@@ -184,6 +185,11 @@ class Dialect(ABC):
     @abstractmethod
     def write_join(
         self, w: StringIO, write_array: WriteFunc, write_delim: WriteFunc
+    ) -> None: ...
+
+    @abstractmethod
+    def write_format(
+        self, w: StringIO, fmt_string: str, write_args: list[WriteFunc]
     ) -> None: ...
 
     # --- Comprehensions ---

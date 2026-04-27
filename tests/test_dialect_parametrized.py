@@ -7,6 +7,7 @@ from pycel2sql.dialect.bigquery import BigQueryDialect
 from pycel2sql.dialect.duckdb import DuckDBDialect
 from pycel2sql.dialect.mysql import MySQLDialect
 from pycel2sql.dialect.postgres import PostgresDialect
+from pycel2sql.dialect.spark import SparkDialect
 from pycel2sql.dialect.sqlite import SQLiteDialect
 
 ALL_DIALECTS = [
@@ -14,6 +15,7 @@ ALL_DIALECTS = [
     pytest.param(DuckDBDialect(), id="duckdb"),
     pytest.param(BigQueryDialect(), id="bigquery"),
     pytest.param(MySQLDialect(), id="mysql"),
+    pytest.param(SparkDialect(), id="spark"),
     pytest.param(SQLiteDialect(), id="sqlite"),
 ]
 

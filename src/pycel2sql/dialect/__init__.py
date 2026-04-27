@@ -5,6 +5,7 @@ from pycel2sql.dialect.bigquery import BigQueryDialect
 from pycel2sql.dialect.duckdb import DuckDBDialect
 from pycel2sql.dialect.mysql import MySQLDialect
 from pycel2sql.dialect.postgres import PostgresDialect
+from pycel2sql.dialect.spark import SparkDialect
 from pycel2sql.dialect.sqlite import SQLiteDialect
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "DuckDBDialect",
     "MySQLDialect",
     "PostgresDialect",
+    "SparkDialect",
     "SQLiteDialect",
     "get_dialect",
 ]
@@ -23,6 +25,7 @@ _REGISTRY: dict[str, type[Dialect]] = {
     DialectName.DUCKDB: DuckDBDialect,
     DialectName.BIGQUERY: BigQueryDialect,
     DialectName.MYSQL: MySQLDialect,
+    DialectName.SPARK: SparkDialect,
     DialectName.SQLITE: SQLiteDialect,
 }
 
