@@ -142,3 +142,34 @@ class TestJoin:
     def test_with_space(self):
         result = convert("['hello', 'world'].join(' ') == 'hello world'")
         assert result == "ARRAY_TO_STRING(ARRAY['hello', 'world'], ' ', '') = 'hello world'"
+
+
+class TestFormatPerDialect:
+    """format() dispatches per dialect: FORMAT for Postgres/BigQuery,
+    format_string for Spark, printf for SQLite/DuckDB, raises for MySQL."""
+
+    def test_postgres_emits_FORMAT(self):
+        from pycel2sql.dialect.postgres import PostgresDialect
+        result = convert("'%s = %d'.format([name, 10])", dialect=PostgresDialect())
+        assert result == "FORMAT('%s = %s', name, 10)"
+
+    def test_bigquery_emits_FORMAT(self):
+        from pycel2sql.dialect.bigquery import BigQueryDialect
+        result = convert("'%s = %d'.format([name, 10])", dialect=BigQueryDialect())
+        assert result == "FORMAT('%s = %s', name, 10)"
+
+    def test_sqlite_emits_printf(self):
+        from pycel2sql.dialect.sqlite import SQLiteDialect
+        result = convert("'%s = %d'.format([name, 10])", dialect=SQLiteDialect())
+        assert result == "printf('%s = %s', name, 10)"
+
+    def test_duckdb_emits_printf(self):
+        from pycel2sql.dialect.duckdb import DuckDBDialect
+        result = convert("'%s = %d'.format([name, 10])", dialect=DuckDBDialect())
+        assert result == "printf('%s = %s', name, 10)"
+
+    def test_mysql_raises(self):
+        from pycel2sql._errors import UnsupportedDialectFeatureError
+        from pycel2sql.dialect.mysql import MySQLDialect
+        with pytest.raises(UnsupportedDialectFeatureError, match="format"):
+            convert("'%s'.format([name])", dialect=MySQLDialect())

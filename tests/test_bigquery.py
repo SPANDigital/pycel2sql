@@ -56,9 +56,7 @@ class TestBigQueryArrays:
     def test_array_length(self, d):
         schemas = {"t": Schema([FieldSchema("arr", repeated=True)])}
         result = convert("t.arr.size()", dialect=d, schemas=schemas)
-        assert "ARRAY_LENGTH(" in result
-        # No COALESCE wrapper in BigQuery
-        assert "COALESCE" not in result
+        assert result == "COALESCE(ARRAY_LENGTH(t.arr), 0)"
 
     def test_empty_typed_array(self, d):
         result = convert('"a,b".split(",", 0)', dialect=d)

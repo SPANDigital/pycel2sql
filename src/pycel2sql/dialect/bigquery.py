@@ -146,9 +146,9 @@ class BigQueryDialect(Dialect):
     def write_array_length(
         self, w: StringIO, dimension: int, write_expr: WriteFunc
     ) -> None:
-        w.write("ARRAY_LENGTH(")
+        w.write("COALESCE(ARRAY_LENGTH(")
         write_expr()
-        w.write(")")
+        w.write("), 0)")
 
     def write_list_index(
         self, w: StringIO, write_array: WriteFunc, write_index: WriteFunc
@@ -199,9 +199,9 @@ class BigQueryDialect(Dialect):
         w.write("))")
 
     def write_json_array_length(self, w: StringIO, write_expr: WriteFunc) -> None:
-        w.write("ARRAY_LENGTH(JSON_QUERY_ARRAY(")
+        w.write("COALESCE(ARRAY_LENGTH(JSON_QUERY_ARRAY(")
         write_expr()
-        w.write("))")
+        w.write(")), 0)")
 
     def write_json_array_membership(
         self, w: StringIO, json_func: str, write_expr: WriteFunc
@@ -302,6 +302,16 @@ class BigQueryDialect(Dialect):
         write_array()
         w.write(", ")
         write_delim()
+        w.write(")")
+
+    def write_format(
+        self, w: StringIO, fmt_string: str, write_args: list[WriteFunc]
+    ) -> None:
+        w.write("FORMAT(")
+        self.write_string_literal(w, fmt_string)
+        for arg in write_args:
+            w.write(", ")
+            arg()
         w.write(")")
 
     # --- Comprehensions ---

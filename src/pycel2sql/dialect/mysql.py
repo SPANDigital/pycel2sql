@@ -6,7 +6,7 @@ import re
 
 from io import StringIO
 
-from pycel2sql._errors import InvalidFieldNameError
+from pycel2sql._errors import InvalidFieldNameError, UnsupportedDialectFeatureError
 from pycel2sql._utils import convert_re2_to_mysql
 from pycel2sql.dialect._base import Dialect, WriteFunc
 
@@ -290,6 +290,14 @@ class MySQLDialect(Dialect):
         w.write("JSON_UNQUOTE(")
         write_array()
         w.write(")")
+
+    def write_format(
+        self, w: StringIO, fmt_string: str, write_args: list[WriteFunc]
+    ) -> None:
+        raise UnsupportedDialectFeatureError(
+            "format() is not supported in MySQL",
+            "MySQL has no equivalent to FORMAT/printf for templated strings",
+        )
 
     # --- Comprehensions ---
 

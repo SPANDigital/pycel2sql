@@ -261,6 +261,16 @@ class DuckDBDialect(Dialect):
         write_delim()
         w.write(")")
 
+    def write_format(
+        self, w: StringIO, fmt_string: str, write_args: list[WriteFunc]
+    ) -> None:
+        w.write("printf(")
+        self.write_string_literal(w, fmt_string)
+        for arg in write_args:
+            w.write(", ")
+            arg()
+        w.write(")")
+
     # --- Comprehensions ---
 
     def write_unnest(self, w: StringIO, write_source: WriteFunc) -> None:

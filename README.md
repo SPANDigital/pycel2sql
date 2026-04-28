@@ -10,6 +10,7 @@
 [![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white)](https://cloud.google.com/bigquery)
 [![MySQL](https://img.shields.io/badge/MySQL-4479A1?logo=mysql&logoColor=white)](https://www.mysql.com/)
 [![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Apache Spark](https://img.shields.io/badge/Apache%20Spark-E25A1C?logo=apachespark&logoColor=white)](https://spark.apache.org/)
 
 Convert [CEL (Common Expression Language)](https://cel.dev/) expressions to SQL WHERE clauses.
 
@@ -38,7 +39,7 @@ sql = convert('status == "active" || tags.size() > 0')
 
 ## Dialects
 
-Five SQL dialects are supported:
+Six SQL dialects are supported:
 
 ```python
 from pycel2sql import convert
@@ -50,9 +51,13 @@ sql = convert('name == "alice"', dialect=get_dialect("mysql"))
 sql = convert('name == "alice"', dialect=get_dialect("sqlite"))
 sql = convert('name == "alice"', dialect=get_dialect("duckdb"))
 sql = convert('name == "alice"', dialect=get_dialect("bigquery"))
+sql = convert('name == "alice"', dialect=get_dialect("spark"))
 
 # Or instantiate directly
-from pycel2sql import PostgresDialect, MySQLDialect, SQLiteDialect, DuckDBDialect, BigQueryDialect
+from pycel2sql import (
+    PostgresDialect, MySQLDialect, SQLiteDialect, DuckDBDialect,
+    BigQueryDialect, SparkDialect,
+)
 
 sql = convert('name == "alice"', dialect=MySQLDialect())
 ```
@@ -75,13 +80,76 @@ result = convert_parameterized('name == "alice"', dialect=MySQLDialect())
 
 Placeholder styles per dialect:
 
-| Dialect    | Placeholder |
-|------------|-------------|
-| PostgreSQL | `$1`, `$2`, ... |
-| DuckDB     | `$1`, `$2`, ... |
-| BigQuery   | `@p1`, `@p2`, ... |
-| MySQL      | `?` |
-| SQLite     | `?` |
+| Dialect       | Placeholder        |
+|---------------|--------------------|
+| PostgreSQL    | `$1`, `$2`, ...    |
+| DuckDB        | `$1`, `$2`, ...    |
+| BigQuery      | `@p1`, `@p2`, ...  |
+| MySQL         | `?` (positional)   |
+| SQLite        | `?` (positional)   |
+| Apache Spark  | `?` (positional)   |
+
+## Conversion Options
+
+### `json_variables`
+
+Declare CEL variable names that correspond to flat JSONB columns. Field access via dot notation or bracket notation emits dialect-specific JSON extraction:
+
+```python
+from pycel2sql import convert
+
+# PostgreSQL: dot and bracket notation both produce ->> operators
+sql = convert("context.host == 'a'", json_variables={"context"})
+# => context->>'host' = 'a'
+
+sql = convert('context["host"] == "a"', json_variables={"context"})
+# => context->>'host' = 'a'
+
+# Nested paths: intermediate keys use ->, final key uses ->>
+sql = convert("tags.corpus.section == 'x'", json_variables={"tags"})
+# => tags->'corpus'->>'section' = 'x'
+```
+
+`json_variables` takes precedence over schema-declared JSON. Comprehension iter vars shadow `json_variables` (collisions are not treated as JSON inside the comprehension body).
+
+### `column_aliases`
+
+Map CEL identifier names to SQL column names. Useful when database columns use prefixed names while user-facing CEL expressions use clean names:
+
+```python
+sql = convert("name == 'a'", column_aliases={"name": "usr_name"})
+# => usr_name = 'a'
+```
+
+The alias is validated against the dialect's identifier rules. The original CEL name remains the schema key — alias is output-only.
+
+### `param_start_index`
+
+Shift the placeholder counter for `convert_parameterized()` when embedding the generated fragment into a larger pre-parameterized query:
+
+```python
+result = convert_parameterized(
+    "name == 'a' && age > 30",
+    param_start_index=5,
+)
+# result.sql => 'name = $5 AND age > $6'
+# result.parameters => ['a', 30]
+```
+
+Values less than 1 are clamped to 1. For positional-`?` dialects (MySQL, SQLite, Apache Spark) the placeholder text is unchanged but the parameter ordering is preserved.
+
+### `format()` per-dialect mapping
+
+CEL's `string.format(args)` dispatches to dialect-specific SQL:
+
+| Dialect       | Output                  |
+|---------------|-------------------------|
+| PostgreSQL    | `FORMAT('...', ...)`    |
+| BigQuery      | `FORMAT('...', ...)`    |
+| SQLite        | `printf('...', ...)`    |
+| DuckDB        | `printf('...', ...)`    |
+| Apache Spark  | `format_string('...', ...)` |
+| MySQL         | raises `UnsupportedDialectFeatureError` |
 
 ## JSON Fields
 
@@ -173,7 +241,7 @@ schemas = introspect_sqlite(
 )
 ```
 
-All five dialects are supported: `introspect_postgres`, `introspect_duckdb`, `introspect_bigquery`, `introspect_mysql`, `introspect_sqlite`.
+All five JDBC-style dialects are supported: `introspect_postgres`, `introspect_duckdb`, `introspect_bigquery`, `introspect_mysql`, `introspect_sqlite`. Apache Spark introspection is not provided — construct `Schema` directly.
 
 ## Supported CEL Features
 
