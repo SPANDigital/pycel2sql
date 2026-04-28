@@ -1323,7 +1323,10 @@ class Converter(Interpreter):
                     f"format specifier %{spec} cannot be converted to SQL",
                 )
 
-        # Convert %d, %f etc. to %s for printf-style dialects
+        # Normalize supported numeric specifiers (%d, %f, etc.) to %s before
+        # dispatching to Dialect.write_format(). %s is universally accepted by
+        # FORMAT()/printf()/format_string(), avoiding type-coercion mismatches
+        # when CEL arguments don't match the original specifier exactly.
         sql_fmt = re.sub(r"%([dfoFeEgG])", "%s", raw_fmt)
 
         # Get the argument list

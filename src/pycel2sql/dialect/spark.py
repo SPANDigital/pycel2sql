@@ -91,6 +91,8 @@ _MAX_NESTING_DEPTH = 10
 
 _NESTED_QUANTIFIERS_RE = re.compile(r"[*+][*+]")
 _QUANTIFIED_ALTERNATION_RE = re.compile(r"\([^)]*\|[^)]*\)[*+]")
+# Captures the flag-letter set inside a `(?<flags>)` or `(?<flags>:` group.
+_INLINE_FLAG_GROUP_RE = re.compile(r"\(\?([a-zA-Z]+)[:)]")
 
 
 def _spark_element_type(type_name: str) -> str:
@@ -232,7 +234,20 @@ def _convert_re2_to_spark(pattern: str) -> tuple[str, bool]:
             "invalid pattern in expression",
             f"nesting depth exceeds limit of {_MAX_NESTING_DEPTH}",
         )
-    if "(?m" in pattern or "(?s" in pattern or "(?-" in pattern:
+    # Reject any inline flag group whose flag-letter set contains anything
+    # other than `i`. This catches combined groups like `(?im)` / `(?mi)` /
+    # `(?ix:...)` that the previous substring-only check missed. The `(?-...)`
+    # flag-clear form is rejected too because the regex matches its leading
+    # `(?` followed by letters; a literal `(?-i)` (no letters before `-`) is
+    # caught by the explicit `(?-` substring check.
+    for match in _INLINE_FLAG_GROUP_RE.finditer(pattern):
+        flags = match.group(1)
+        if any(f != "i" for f in flags):
+            raise InvalidRegexPatternError(
+                "invalid pattern in expression",
+                "inline flags other than (?i) are not supported in Spark regex",
+            )
+    if "(?-" in pattern:
         raise InvalidRegexPatternError(
             "invalid pattern in expression",
             "inline flags other than (?i) are not supported in Spark regex",
@@ -330,7 +345,7 @@ class SparkDialect(Dialect):
                 f"Spark dialect does not support multi-dimensional array "
                 f"length (dimension={dimension})",
             )
-        # Spark size() returns -1 for null; COALESCE collapses to 0.
+        # In Spark SQL, size(NULL) evaluates to NULL; COALESCE converts that to 0.
         w.write("COALESCE(size(")
         write_expr()
         w.write("), 0)")

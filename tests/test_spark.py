@@ -151,6 +151,18 @@ class TestSparkRegex:
         with pytest.raises(InvalidRegexPatternError):
             convert('name.matches("(?m)foo")', dialect=d)
 
+    @pytest.mark.parametrize("pat", ["(?im)foo", "(?mi)foo", "(?ix:foo)", "(?-i)foo"])
+    def test_combined_flag_groups_rejected(self, d, pat):
+        # `(?i)` alone is allowed; any other flags (even combined with `i`)
+        # must be rejected.
+        with pytest.raises(InvalidRegexPatternError):
+            convert(f'name.matches("{pat}")', dialect=d)
+
+    def test_lone_inline_i_flag_allowed(self, d):
+        # Sanity check: a bare `(?i)` group still passes.
+        result = convert('name.matches("(?i)foo")', dialect=d)
+        assert "RLIKE '(?i)foo'" in result
+
     def test_overlong_pattern_rejected_at_validator(self):
         big = "a" * 600
         with pytest.raises(InvalidRegexPatternError):

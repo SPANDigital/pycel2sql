@@ -146,7 +146,7 @@ class TestJoin:
 
 class TestFormatPerDialect:
     """format() dispatches per dialect: FORMAT for Postgres/BigQuery,
-    printf for SQLite/DuckDB, raises for MySQL."""
+    format_string for Spark, printf for SQLite/DuckDB, raises for MySQL."""
 
     def test_postgres_emits_FORMAT(self):
         from pycel2sql.dialect.postgres import PostgresDialect
