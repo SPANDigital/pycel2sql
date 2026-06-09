@@ -83,7 +83,7 @@ Lark grammar rule names encode operators: `relation_eq`, `addition_add`, `multip
 - **BigQuery**: `@pN` params, `[...]` arrays, `REGEXP_CONTAINS()`, `JSON_VALUE()`, `TIMESTAMP_ADD/SUB()`, `FORMAT()`
 - **MySQL**: `?` params, `JSON_ARRAY()`, `REGEXP`, `JSON_TABLE()` for unnest, `format()` raises `UnsupportedDialectFeatureError`
 - **SQLite**: `?` params, `json_array()`, no regex/split/join, `json_each()` for unnest, `printf()`
-- **Apache Spark**: `?` positional params, `array(...)`, `RLIKE`, `get_json_object()`, `concat()`, `array_contains(arr, elem)` (arg order swap), `EXPLODE` / `(SELECT collect_list(...))`, `format_string()`, `(dayofweek(t) - 1)` for day-of-week, JSON array membership raises (no boolean predicate available)
+- **Apache Spark**: `?` positional params, `array(...)`, `RLIKE`, `get_json_object()`, `concat()`, `array_contains(arr, elem)` (arg order swap), `EXPLODE` / `(SELECT collect_list(...))`, `format_string()`, `(dayofweek(t) - 1)` for day-of-week, JSON array membership via `array_contains(from_json(arr, 'ARRAY<STRING>'), elem)`
 
 ### Test Organization
 
@@ -95,6 +95,7 @@ Unit tests (`tests/test_*.py`) cover each feature area per dialect. Integration 
 - JSON numeric cast applies only for numeric comparisons, not string comparisons
 - `has()` on a JSON column = `IS NOT NULL`; `has()` on a JSON key = JSONB `?` operator (PG)
 - `size()` dispatches to `ARRAY_LENGTH` for arrays, `LENGTH` for strings
+- `x in <field>` where the field is a schema-declared JSON array (or nested JSON access / flat `json_variables` path) routes through `Dialect.write_json_array_membership` / `write_nested_json_array_membership` — each dialect owns the full boolean predicate (the converter passes both a `write_elem` and `write_array` callback, never emitting `elem = ` inline). `_visit_in` detects the JSON RHS; a direct `table.field` carries JSONB-ness via `json_func`, a deeper chain uses the nested form. Non-JSON RHS falls back to `write_array_membership`.
 - Depth tracking: `_visit_child()` increments/decrements `_depth` and checks limits
 - Error types use dual messaging pattern to prevent information disclosure (CWE-209)
 - `validate_schema` parameter: opt-in strict validation on `convert()`/`convert_parameterized()`/`analyze()`. Validates `table.field` references exist in schemas; skips comprehension variables, bare identifiers, and nested JSON keys beyond the first field. Raises `InvalidSchemaError` (with dual messaging). Requires schemas to be provided.

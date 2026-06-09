@@ -173,18 +173,22 @@ class DuckDBDialect(Dialect):
         w.write("), 0)")
 
     def write_json_array_membership(
-        self, w: StringIO, json_func: str, write_expr: WriteFunc
+        self, w: StringIO, json_func: str, write_elem: WriteFunc, write_array: WriteFunc
     ) -> None:
-        w.write("(SELECT value FROM json_each(")
-        write_expr()
-        w.write("))")
+        w.write("EXISTS (SELECT 1 FROM json_each(")
+        write_array()
+        w.write(") WHERE value = ")
+        write_elem()
+        w.write(")")
 
     def write_nested_json_array_membership(
-        self, w: StringIO, write_expr: WriteFunc
+        self, w: StringIO, write_elem: WriteFunc, write_array: WriteFunc
     ) -> None:
-        w.write("(SELECT value FROM json_each(")
-        write_expr()
-        w.write("))")
+        w.write("EXISTS (SELECT 1 FROM json_each(")
+        write_array()
+        w.write(") WHERE value = ")
+        write_elem()
+        w.write(")")
 
     # --- Timestamps ---
 

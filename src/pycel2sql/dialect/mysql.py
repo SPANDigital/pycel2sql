@@ -205,18 +205,22 @@ class MySQLDialect(Dialect):
         w.write("), 0)")
 
     def write_json_array_membership(
-        self, w: StringIO, json_func: str, write_expr: WriteFunc
+        self, w: StringIO, json_func: str, write_elem: WriteFunc, write_array: WriteFunc
     ) -> None:
-        w.write("JSON_CONTAINS(")
-        write_expr()
-        w.write(", CAST(? AS JSON))")
+        w.write("JSON_OVERLAPS(JSON_ARRAY(")
+        write_elem()
+        w.write("), ")
+        write_array()
+        w.write(")")
 
     def write_nested_json_array_membership(
-        self, w: StringIO, write_expr: WriteFunc
+        self, w: StringIO, write_elem: WriteFunc, write_array: WriteFunc
     ) -> None:
-        w.write("JSON_CONTAINS(")
-        write_expr()
-        w.write(", CAST(? AS JSON))")
+        w.write("JSON_OVERLAPS(JSON_ARRAY(")
+        write_elem()
+        w.write("), ")
+        write_array()
+        w.write(")")
 
     # --- Timestamps ---
 

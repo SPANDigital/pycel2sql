@@ -129,13 +129,21 @@ class Dialect(ABC):
 
     @abstractmethod
     def write_json_array_membership(
-        self, w: StringIO, json_func: str, write_expr: WriteFunc
-    ) -> None: ...
+        self, w: StringIO, json_func: str, write_elem: WriteFunc, write_array: WriteFunc
+    ) -> None:
+        """Write a JSON array membership test (``elem in arr``) for the IN operator.
+
+        ``write_elem`` emits the candidate element; ``write_array`` emits the
+        JSON array expression. The dialect owns the full boolean predicate.
+        """
+        ...
 
     @abstractmethod
     def write_nested_json_array_membership(
-        self, w: StringIO, write_expr: WriteFunc
-    ) -> None: ...
+        self, w: StringIO, write_elem: WriteFunc, write_array: WriteFunc
+    ) -> None:
+        """Write a nested JSON array membership test for the IN operator."""
+        ...
 
     # --- Timestamps ---
 
