@@ -165,17 +165,19 @@ class PostgresDialect(Dialect):
         w.write("), 0)")
 
     def write_json_array_membership(
-        self, w: StringIO, json_func: str, write_expr: WriteFunc
+        self, w: StringIO, json_func: str, write_elem: WriteFunc, write_array: WriteFunc
     ) -> None:
-        w.write(f"ANY(ARRAY(SELECT {json_func}(")
-        write_expr()
+        write_elem()
+        w.write(f" = ANY(ARRAY(SELECT {json_func}(")
+        write_array()
         w.write(")))")
 
     def write_nested_json_array_membership(
-        self, w: StringIO, write_expr: WriteFunc
+        self, w: StringIO, write_elem: WriteFunc, write_array: WriteFunc
     ) -> None:
-        w.write("ANY(ARRAY(SELECT jsonb_array_elements_text(")
-        write_expr()
+        write_elem()
+        w.write(" = ANY(ARRAY(SELECT jsonb_array_elements_text(")
+        write_array()
         w.write(")))")
 
     # --- Timestamps ---

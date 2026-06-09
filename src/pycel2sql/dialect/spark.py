@@ -403,33 +403,24 @@ class SparkDialect(Dialect):
         w.write(", 'ARRAY<STRING>')), 0)")
 
     def write_json_array_membership(
-        self, w: StringIO, json_func: str, write_expr: WriteFunc
+        self, w: StringIO, json_func: str, write_elem: WriteFunc, write_array: WriteFunc
     ) -> None:
-        # The converter emits `lhs = <subquery>` for this construct, and a
-        # scalar subquery built from EXPLODE(from_json(...)) can return
-        # multiple rows — Spark rejects that at runtime. The dialect contract
-        # here does not provide the candidate element, so we cannot rewrite
-        # to a boolean predicate (e.g. array_contains(from_json(...), elem)).
-        # Failing fast at conversion time is preferable to emitting SQL that
-        # fails at execution.
-        raise UnsupportedDialectFeatureError(
-            "JSON array membership is not supported in Spark",
-            "Spark JSON array membership requires a boolean predicate "
-            "(array_contains/EXISTS); the dialect contract does not provide "
-            "the candidate element to build one. Use a typed ARRAY<T> column "
-            "or rewrite the expression in application code.",
-        )
+        # Now that the converter supplies the candidate element, Spark can build
+        # a proper boolean predicate: array_contains(from_json(arr, ...), elem).
+        w.write("array_contains(from_json(")
+        write_array()
+        w.write(", 'ARRAY<STRING>'), ")
+        write_elem()
+        w.write(")")
 
     def write_nested_json_array_membership(
-        self, w: StringIO, write_expr: WriteFunc
+        self, w: StringIO, write_elem: WriteFunc, write_array: WriteFunc
     ) -> None:
-        raise UnsupportedDialectFeatureError(
-            "nested JSON array membership is not supported in Spark",
-            "Spark nested JSON array membership requires a boolean predicate "
-            "(array_contains/EXISTS); the dialect contract does not provide "
-            "the candidate element to build one. Use a typed ARRAY<T> column "
-            "or rewrite the expression in application code.",
-        )
+        w.write("array_contains(from_json(")
+        write_array()
+        w.write(", 'ARRAY<STRING>'), ")
+        write_elem()
+        w.write(")")
 
     # --- Timestamps ---
 

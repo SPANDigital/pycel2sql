@@ -9,7 +9,6 @@ from pycel2sql import convert, convert_parameterized
 from pycel2sql._errors import (
     InvalidFieldNameError,
     InvalidRegexPatternError,
-    UnsupportedDialectFeatureError,
 )
 from pycel2sql.dialect.spark import (
     SparkDialect,
@@ -213,20 +212,25 @@ class TestSparkJSON:
         result = convert("context.host == 'a'", dialect=d, json_variables={"context"})
         assert result == "get_json_object(context, '$.host') = 'a'"
 
-    def test_json_array_membership_dialect_method_raises(self, d):
-        # Direct dialect-level call: the converter doesn't currently route
-        # `in` against a JSON-array field through write_json_array_membership,
-        # but the Spark dialect must raise if it ever does.
+    def test_json_array_membership_emits_array_contains(self, d):
+        # The converter now supplies the candidate element, so Spark builds a
+        # proper boolean predicate instead of raising.
         from io import StringIO
 
-        with pytest.raises(UnsupportedDialectFeatureError):
-            d.write_json_array_membership(StringIO(), "x", lambda: None)
+        w = StringIO()
+        d.write_json_array_membership(
+            w, "x", lambda: w.write("elem"), lambda: w.write("arr")
+        )
+        assert w.getvalue() == "array_contains(from_json(arr, 'ARRAY<STRING>'), elem)"
 
-    def test_nested_json_array_membership_dialect_method_raises(self, d):
+    def test_nested_json_array_membership_emits_array_contains(self, d):
         from io import StringIO
 
-        with pytest.raises(UnsupportedDialectFeatureError):
-            d.write_nested_json_array_membership(StringIO(), lambda: None)
+        w = StringIO()
+        d.write_nested_json_array_membership(
+            w, lambda: w.write("elem"), lambda: w.write("arr")
+        )
+        assert w.getvalue() == "array_contains(from_json(arr, 'ARRAY<STRING>'), elem)"
 
 
 class TestSparkValidation:

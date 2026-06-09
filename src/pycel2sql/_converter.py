@@ -394,21 +394,92 @@ class Converter(Interpreter):
     # ---- IN operator ----
 
     def _visit_in(self, lhs: Tree, rhs: Tree) -> None:
-        """Handle the 'in' operator: x in [1,2,3] or x in arr."""
-        if _tree_is_list_literal(rhs):
-            # x in [1, 2, 3] -> x = ANY(ARRAY[1, 2, 3])
-            self._dialect.write_array_membership(
-                self._w,
-                lambda: self._visit_child(lhs),
-                lambda: self._visit_child(rhs),
+        """Handle the 'in' operator: x in [1,2,3], x in arr, or x in t.json_arr."""
+        # x in <JSON array field> routes to a dialect-specific membership
+        # predicate; a JSON array can't be tested with plain `= ANY(...)`.
+        if not _tree_is_list_literal(rhs) and self._visit_in_json_array(lhs, rhs):
+            return
+        # x in [1, 2, 3] / x in arr -> x = ANY(ARRAY[...]) / x = ANY(arr)
+        self._dialect.write_array_membership(
+            self._w,
+            lambda: self._visit_child(lhs),
+            lambda: self._visit_child(rhs),
+        )
+
+    def _visit_in_json_array(self, lhs: Tree, rhs: Tree) -> bool:
+        """Route `x in <json array>` to the JSON-array membership dialect hooks.
+
+        Returns True if the RHS is a JSON array (schema-declared JSON field,
+        nested JSON access, or a flat JSON variable path) and the membership
+        predicate was written; False to fall back to plain array membership.
+        """
+        member = self._unwrap_to_member_dot(rhs)
+        if member is None:
+            return False
+        obj = member.children[0]
+        field_name = str(member.children[1])
+        table_name = self._get_root_ident(obj)
+        if not table_name:
+            return False
+
+        def write_elem() -> None:
+            self._visit_child(lhs)
+
+        def write_array() -> None:
+            self._visit_child(rhs)
+
+        # Flat JSON variable accessed by path (e.g. `x in context.tags`).
+        if self._is_json_variable_root(table_name):
+            self._dialect.write_nested_json_array_membership(self._w, write_elem, write_array)
+            return True
+
+        if self._is_comprehension_var(table_name):
+            return False
+
+        first_field = self._get_first_field(obj, field_name)
+        if not self._is_field_json(table_name, first_field):
+            return False
+
+        # Direct `table.field` (obj is the bare table root) carries the JSONB-ness
+        # via json_func; a deeper chain (`table.json.key`) is nested access.
+        if self._obj_is_bare_root(obj):
+            is_jsonb = self._is_field_jsonb(table_name, first_field)
+            json_func = (
+                "jsonb_array_elements_text" if is_jsonb else "json_array_elements_text"
+            )
+            self._dialect.write_json_array_membership(
+                self._w, json_func, write_elem, write_array
             )
         else:
-            # x in arr -> x = ANY(arr)
-            self._dialect.write_array_membership(
-                self._w,
-                lambda: self._visit_child(lhs),
-                lambda: self._visit_child(rhs),
+            self._dialect.write_nested_json_array_membership(self._w, write_elem, write_array)
+        return True
+
+    def _unwrap_to_member_dot(self, tree: Tree) -> Tree | None:
+        """Strip single-child grammar wrappers and return a member_dot node, if any."""
+        node: Tree | Token = tree
+        while (
+            isinstance(node, Tree)
+            and node.data in (
+                "expr", "conditionalor", "conditionaland", "relation",
+                "addition", "multiplication", "unary", "member", "primary",
             )
+            and len(node.children) == 1
+        ):
+            node = node.children[0]
+        if isinstance(node, Tree) and node.data == "member_dot":
+            return node
+        return None
+
+    def _obj_is_bare_root(self, obj: Tree | Token) -> bool:
+        """True if a member_dot operand unwraps to a bare identifier (the table root)."""
+        node: Tree | Token = obj
+        while (
+            isinstance(node, Tree)
+            and node.data in ("member", "primary")
+            and len(node.children) == 1
+        ):
+            node = node.children[0]
+        return isinstance(node, Tree) and node.data == "ident"
 
     # ---- Arithmetic ----
 
