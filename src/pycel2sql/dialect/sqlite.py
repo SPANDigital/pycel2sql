@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import re
-
 from io import StringIO
 
-from pycel2sql._errors import InvalidFieldNameError, UnsupportedDialectFeatureError
+from pycel2sql._errors import UnsupportedDialectFeatureError
+from pycel2sql._utils import validate_sql_field_name
 from pycel2sql.dialect._base import Dialect, WriteFunc
 
 # SQLite reserved keywords
@@ -34,8 +33,6 @@ _SQLITE_RESERVED: set[str] = {
     "union", "unique", "update", "using", "vacuum", "values", "view",
     "virtual", "when", "where", "window", "with", "without",
 }
-
-_FIELD_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 # CEL type name -> SQLite type name
 _TYPE_MAP: dict[str, str] = {
@@ -65,11 +62,10 @@ _STRFTIME_MAP: dict[str, str] = {
 class SQLiteDialect(Dialect):
     """SQLite dialect for CEL-to-SQL conversion."""
 
-    # --- Literals ---
+    TYPE_MAP = _TYPE_MAP
 
-    def write_string_literal(self, w: StringIO, value: str) -> None:
-        escaped = value.replace("'", "''")
-        w.write(f"'{escaped}'")
+    # --- Literals ---
+    # write_string_literal: inherits the base default (single-quote escaping).
 
     def write_bytes_literal(self, w: StringIO, value: bytes) -> None:
         hex_str = value.hex().upper()
@@ -79,13 +75,7 @@ class SQLiteDialect(Dialect):
         w.write("?")
 
     # --- Operators ---
-
-    def write_string_concat(
-        self, w: StringIO, write_lhs: WriteFunc, write_rhs: WriteFunc
-    ) -> None:
-        write_lhs()
-        w.write(" || ")
-        write_rhs()
+    # write_string_concat: inherits the base default (`||`).
 
     def write_regex_match(
         self, w: StringIO, write_target: WriteFunc, pattern: str, case_insensitive: bool
@@ -111,10 +101,6 @@ class SQLiteDialect(Dialect):
     def write_cast_to_numeric(self, w: StringIO, write_expr: WriteFunc) -> None:
         write_expr()
         w.write(" + 0")
-
-    def write_type_name(self, w: StringIO, cel_type_name: str) -> None:
-        sql_type = _TYPE_MAP.get(cel_type_name, cel_type_name.upper())
-        w.write(sql_type)
 
     def write_epoch_extract(self, w: StringIO, write_expr: WriteFunc) -> None:
         w.write("CAST(strftime('%s', ")
@@ -346,8 +332,7 @@ class SQLiteDialect(Dialect):
     def write_struct_open(self, w: StringIO) -> None:
         w.write("json_object(")
 
-    def write_struct_close(self, w: StringIO) -> None:
-        w.write(")")
+    # write_struct_close: inherits the base `)` default.
 
     # --- Validation ---
 
@@ -355,21 +340,9 @@ class SQLiteDialect(Dialect):
         return 0  # No limit
 
     def validate_field_name(self, name: str) -> None:
-        if not name:
-            raise InvalidFieldNameError(
-                "field name cannot be empty",
-                "empty field name provided",
-            )
-        if not _FIELD_NAME_RE.match(name):
-            raise InvalidFieldNameError(
-                "invalid field name format",
-                f"field name '{name}' contains invalid characters",
-            )
-        if name.lower() in _SQLITE_RESERVED:
-            raise InvalidFieldNameError(
-                "field name is a reserved SQL keyword",
-                f"field name '{name}' is a reserved SQLite keyword",
-            )
+        validate_sql_field_name(
+            name, reserved=_SQLITE_RESERVED, keyword_label="SQLite"
+        )
 
     # --- Capabilities ---
 

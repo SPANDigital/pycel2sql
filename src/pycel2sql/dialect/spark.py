@@ -258,11 +258,10 @@ def _convert_re2_to_spark(pattern: str) -> tuple[str, bool]:
 class SparkDialect(Dialect):
     """Apache Spark SQL dialect for CEL-to-SQL conversion."""
 
-    # --- Literals ---
+    TYPE_MAP = _TYPE_MAP
 
-    def write_string_literal(self, w: StringIO, value: str) -> None:
-        escaped = value.replace("'", "''")
-        w.write(f"'{escaped}'")
+    # --- Literals ---
+    # write_string_literal: inherits the base default (single-quote escaping).
 
     def write_bytes_literal(self, w: StringIO, value: bytes) -> None:
         hex_str = value.hex().upper()
@@ -313,10 +312,6 @@ class SparkDialect(Dialect):
         # (same trick MySQL/SQLite use), forcing string→number coercion.
         write_expr()
         w.write(" + 0")
-
-    def write_type_name(self, w: StringIO, cel_type_name: str) -> None:
-        sql_type = _TYPE_MAP.get(cel_type_name, cel_type_name.upper())
-        w.write(sql_type)
 
     def write_epoch_extract(self, w: StringIO, write_expr: WriteFunc) -> None:
         w.write("UNIX_TIMESTAMP(")
@@ -423,16 +418,7 @@ class SparkDialect(Dialect):
         w.write(")")
 
     # --- Timestamps ---
-
-    def write_duration(self, w: StringIO, value: int, unit: str) -> None:
-        w.write(f"INTERVAL {value} {unit}")
-
-    def write_interval(
-        self, w: StringIO, write_value: WriteFunc, unit: str
-    ) -> None:
-        w.write("INTERVAL ")
-        write_value()
-        w.write(f" {unit}")
+    # write_duration / write_interval: inherit the base `INTERVAL <n> <unit>` defaults.
 
     def write_extract(
         self,
@@ -458,16 +444,7 @@ class SparkDialect(Dialect):
             write_tz()
         w.write(")")
 
-    def write_timestamp_arithmetic(
-        self,
-        w: StringIO,
-        op: str,
-        write_ts: WriteFunc,
-        write_dur: WriteFunc,
-    ) -> None:
-        write_ts()
-        w.write(f" {op} ")
-        write_dur()
+    # write_timestamp_arithmetic: inherits the base infix `<ts> <op> <dur>` default.
 
     # --- String Functions ---
 
@@ -546,8 +523,7 @@ class SparkDialect(Dialect):
     def write_struct_open(self, w: StringIO) -> None:
         w.write("struct(")
 
-    def write_struct_close(self, w: StringIO) -> None:
-        w.write(")")
+    # write_struct_close: inherits the base `)` default.
 
     # --- Validation ---
 
