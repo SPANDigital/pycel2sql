@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import re
-
 from io import StringIO
 
-from pycel2sql._errors import InvalidFieldNameError
-from pycel2sql._utils import convert_re2_to_re2_native
+from pycel2sql._utils import convert_re2_to_re2_native, validate_sql_field_name
 from pycel2sql.dialect._base import Dialect, WriteFunc
 
 # DuckDB reserved keywords
@@ -25,8 +22,6 @@ _DUCKDB_RESERVED: set[str] = {
     "values", "when", "where", "with",
 }
 
-_FIELD_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
 # CEL type name -> DuckDB type name
 _TYPE_MAP: dict[str, str] = {
     "bool": "BOOLEAN",
@@ -42,11 +37,10 @@ _TYPE_MAP: dict[str, str] = {
 class DuckDBDialect(Dialect):
     """DuckDB dialect for CEL-to-SQL conversion."""
 
-    # --- Literals ---
+    TYPE_MAP = _TYPE_MAP
 
-    def write_string_literal(self, w: StringIO, value: str) -> None:
-        escaped = value.replace("'", "''")
-        w.write(f"'{escaped}'")
+    # --- Literals ---
+    # write_string_literal: inherits the base default (single-quote escaping).
 
     def write_bytes_literal(self, w: StringIO, value: bytes) -> None:
         hex_str = value.hex().upper()
@@ -56,13 +50,7 @@ class DuckDBDialect(Dialect):
         w.write(f"${param_index}")
 
     # --- Operators ---
-
-    def write_string_concat(
-        self, w: StringIO, write_lhs: WriteFunc, write_rhs: WriteFunc
-    ) -> None:
-        write_lhs()
-        w.write(" || ")
-        write_rhs()
+    # write_string_concat: inherits the base default (`||`).
 
     def write_regex_match(
         self, w: StringIO, write_target: WriteFunc, pattern: str, case_insensitive: bool
@@ -93,10 +81,6 @@ class DuckDBDialect(Dialect):
     def write_cast_to_numeric(self, w: StringIO, write_expr: WriteFunc) -> None:
         write_expr()
         w.write("::DOUBLE")
-
-    def write_type_name(self, w: StringIO, cel_type_name: str) -> None:
-        sql_type = _TYPE_MAP.get(cel_type_name, cel_type_name.upper())
-        w.write(sql_type)
 
     def write_epoch_extract(self, w: StringIO, write_expr: WriteFunc) -> None:
         w.write("EXTRACT(EPOCH FROM ")
@@ -191,16 +175,7 @@ class DuckDBDialect(Dialect):
         w.write(")")
 
     # --- Timestamps ---
-
-    def write_duration(self, w: StringIO, value: int, unit: str) -> None:
-        w.write(f"INTERVAL {value} {unit}")
-
-    def write_interval(
-        self, w: StringIO, write_value: WriteFunc, unit: str
-    ) -> None:
-        w.write("INTERVAL ")
-        write_value()
-        w.write(f" {unit}")
+    # write_duration / write_interval: inherit the base `INTERVAL <n> <unit>` defaults.
 
     def write_extract(
         self,
@@ -216,16 +191,7 @@ class DuckDBDialect(Dialect):
             write_tz()
         w.write(")")
 
-    def write_timestamp_arithmetic(
-        self,
-        w: StringIO,
-        op: str,
-        write_ts: WriteFunc,
-        write_dur: WriteFunc,
-    ) -> None:
-        write_ts()
-        w.write(f" {op} ")
-        write_dur()
+    # write_timestamp_arithmetic: inherits the base infix `<ts> <op> <dur>` default.
 
     # --- String Functions ---
 
@@ -298,8 +264,7 @@ class DuckDBDialect(Dialect):
     def write_struct_open(self, w: StringIO) -> None:
         w.write("ROW(")
 
-    def write_struct_close(self, w: StringIO) -> None:
-        w.write(")")
+    # write_struct_close: inherits the base `)` default.
 
     # --- Validation ---
 
@@ -307,21 +272,9 @@ class DuckDBDialect(Dialect):
         return 0  # No limit
 
     def validate_field_name(self, name: str) -> None:
-        if not name:
-            raise InvalidFieldNameError(
-                "field name cannot be empty",
-                "empty field name provided",
-            )
-        if not _FIELD_NAME_RE.match(name):
-            raise InvalidFieldNameError(
-                "invalid field name format",
-                f"field name '{name}' contains invalid characters",
-            )
-        if name.lower() in _DUCKDB_RESERVED:
-            raise InvalidFieldNameError(
-                "field name is a reserved SQL keyword",
-                f"field name '{name}' is a reserved DuckDB keyword",
-            )
+        validate_sql_field_name(
+            name, reserved=_DUCKDB_RESERVED, keyword_label="DuckDB"
+        )
 
     # --- Capabilities ---
 

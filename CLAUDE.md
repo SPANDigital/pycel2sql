@@ -26,7 +26,7 @@ uv run pytest tests/integration/ -v
 # Lint
 uv run ruff check src/ tests/
 
-# Type check (strict mode; pre-existing lark type errors are expected)
+# Type check (strict mode; should report no errors)
 uv run mypy src/pycel2sql/
 ```
 

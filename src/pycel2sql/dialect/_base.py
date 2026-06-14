@@ -36,10 +36,16 @@ class Dialect(ABC):
     Methods receive a StringIO writer and callback functions for sub-expressions.
     """
 
+    # CEL type name -> SQL type name. Subclasses populate this; consumed by the
+    # default ``write_type_name`` below.
+    TYPE_MAP: dict[str, str] = {}
+
     # --- Literals ---
 
-    @abstractmethod
-    def write_string_literal(self, w: StringIO, value: str) -> None: ...
+    def write_string_literal(self, w: StringIO, value: str) -> None:
+        """Default: single-quoted with ``'`` doubled. Override for other escaping."""
+        escaped = value.replace("'", "''")
+        w.write(f"'{escaped}'")
 
     @abstractmethod
     def write_bytes_literal(self, w: StringIO, value: bytes) -> None: ...
@@ -49,10 +55,13 @@ class Dialect(ABC):
 
     # --- Operators ---
 
-    @abstractmethod
     def write_string_concat(
         self, w: StringIO, write_lhs: WriteFunc, write_rhs: WriteFunc
-    ) -> None: ...
+    ) -> None:
+        """Default: SQL-standard ``||`` concatenation. Override for function-style concat."""
+        write_lhs()
+        w.write(" || ")
+        write_rhs()
 
     @abstractmethod
     def write_regex_match(
@@ -72,8 +81,9 @@ class Dialect(ABC):
     @abstractmethod
     def write_cast_to_numeric(self, w: StringIO, write_expr: WriteFunc) -> None: ...
 
-    @abstractmethod
-    def write_type_name(self, w: StringIO, cel_type_name: str) -> None: ...
+    def write_type_name(self, w: StringIO, cel_type_name: str) -> None:
+        """Default: look up ``TYPE_MAP``, falling back to the upper-cased CEL name."""
+        w.write(self.TYPE_MAP.get(cel_type_name, cel_type_name.upper()))
 
     @abstractmethod
     def write_epoch_extract(self, w: StringIO, write_expr: WriteFunc) -> None: ...
@@ -147,13 +157,17 @@ class Dialect(ABC):
 
     # --- Timestamps ---
 
-    @abstractmethod
-    def write_duration(self, w: StringIO, value: int, unit: str) -> None: ...
+    def write_duration(self, w: StringIO, value: int, unit: str) -> None:
+        """Default: ``INTERVAL <n> <unit>``. Override where intervals differ (e.g. SQLite)."""
+        w.write(f"INTERVAL {value} {unit}")
 
-    @abstractmethod
     def write_interval(
         self, w: StringIO, write_value: WriteFunc, unit: str
-    ) -> None: ...
+    ) -> None:
+        """Default: ``INTERVAL <expr> <unit>``. Override where intervals differ (e.g. SQLite)."""
+        w.write("INTERVAL ")
+        write_value()
+        w.write(f" {unit}")
 
     @abstractmethod
     def write_extract(
@@ -164,14 +178,18 @@ class Dialect(ABC):
         write_tz: WriteFunc | None,
     ) -> None: ...
 
-    @abstractmethod
     def write_timestamp_arithmetic(
         self,
         w: StringIO,
         op: str,
         write_ts: WriteFunc,
         write_dur: WriteFunc,
-    ) -> None: ...
+    ) -> None:
+        """Default: infix ``<ts> <op> <dur>``. Override for function-style (BigQuery)
+        or modifier-style (SQLite) arithmetic."""
+        write_ts()
+        w.write(f" {op} ")
+        write_dur()
 
     # --- String Functions ---
 
@@ -221,8 +239,9 @@ class Dialect(ABC):
     @abstractmethod
     def write_struct_open(self, w: StringIO) -> None: ...
 
-    @abstractmethod
-    def write_struct_close(self, w: StringIO) -> None: ...
+    def write_struct_close(self, w: StringIO) -> None:
+        """Default: ``)``. Pairs with the dialect-specific ``write_struct_open``."""
+        w.write(")")
 
     # --- Validation ---
 

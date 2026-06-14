@@ -33,8 +33,15 @@ from pycel2sql._utils import (
     validate_field_name,
     validate_no_null_bytes,
 )
-from pycel2sql.dialect._base import Dialect
-from pycel2sql.schema import Schema
+from pycel2sql.dialect._base import Dialect, WriteFunc
+from pycel2sql.schema import Schema, field_is_json
+
+# Annotation-only aliases for Lark parse-tree nodes. Safe at runtime because
+# both this module and `_analysis.py` use `from __future__ import annotations`,
+# so the subscripted generics are never evaluated. `Branch` mirrors lark's own
+# `Tree.children` element type: a child is either a sub-tree or a leaf Token.
+TreeT = Tree[Token]
+Branch = TreeT | Token
 
 
 def _strip_quotes(s: str) -> str:
@@ -76,12 +83,12 @@ def _is_bytes_token(token: Token) -> bool:
     return token.type == "BYTES_LIT"
 
 
-def _get_literal_token(tree: Tree) -> Token | None:
+def _get_literal_token(tree: Branch) -> Token | None:
     """Extract the literal token from a deeply-nested expression tree.
 
     Walks through the precedence chain to find a literal at the bottom.
     """
-    node: Tree | Token = tree
+    node: TreeT | Token = tree
     while isinstance(node, Tree):
         if node.data == "literal":
             if node.children:
@@ -97,7 +104,12 @@ def _get_literal_token(tree: Tree) -> Token | None:
     return None
 
 
-def _tree_contains_string_literal(tree: Tree) -> bool:
+def _children(node: Branch | None) -> list[Branch]:
+    """Return a node's children, or [] for a leaf Token / None."""
+    return node.children if isinstance(node, Tree) else []
+
+
+def _tree_contains_string_literal(tree: Branch) -> bool:
     """Check if a tree contains any string literal at its leaves."""
     if isinstance(tree, Token):
         return _is_string_token(tree)
@@ -111,9 +123,9 @@ def _tree_contains_string_literal(tree: Tree) -> bool:
     )
 
 
-def _tree_is_list_literal(tree: Tree) -> bool:
+def _tree_is_list_literal(tree: Branch) -> bool:
     """Check if a tree is a list literal (for IN operator)."""
-    node: Tree | Token = tree
+    node: TreeT | Token = tree
     while isinstance(node, Tree):
         if node.data == "list_lit":
             return True
@@ -124,9 +136,9 @@ def _tree_is_list_literal(tree: Tree) -> bool:
     return False
 
 
-def _unwrap_to_data(tree: Tree, target_data: str) -> Tree | None:
+def _unwrap_to_data(tree: Branch, target_data: str) -> TreeT | None:
     """Unwrap single-child tree nodes to find a node with the given data."""
-    node: Tree | Token = tree
+    node: TreeT | Token = tree
     while isinstance(node, Tree):
         if node.data == target_data:
             return node
@@ -137,7 +149,7 @@ def _unwrap_to_data(tree: Tree, target_data: str) -> Tree | None:
     return None
 
 
-class Converter(Interpreter):
+class Converter(Interpreter[Token, None]):
     """Converts a CEL Lark parse tree into a SQL WHERE clause string."""
 
     def __init__(
@@ -198,7 +210,7 @@ class Converter(Interpreter):
         self._parameters.append(value)
         return self._param_count
 
-    def _visit_child(self, tree: Tree) -> None:
+    def _visit_child(self, tree: Branch) -> None:
         """Visit a child node, incrementing depth."""
         self._depth += 1
         try:
@@ -209,7 +221,7 @@ class Converter(Interpreter):
 
     # ---- Top-level entry ----
 
-    def visit(self, tree: Tree) -> Any:
+    def visit(self, tree: Branch) -> Any:
         """Override to handle Token children transparently."""
         if isinstance(tree, Token):
             # Bare tokens shouldn't appear at this level normally,
@@ -220,7 +232,7 @@ class Converter(Interpreter):
 
     # ---- expr: top-level, potentially ternary ----
 
-    def expr(self, tree: Tree) -> None:
+    def expr(self, tree: TreeT) -> None:
         children = tree.children
         if len(children) == 3:
             # Ternary: condition ? true_val : false_val
@@ -241,7 +253,7 @@ class Converter(Interpreter):
 
     # ---- Logical operators ----
 
-    def conditionalor(self, tree: Tree) -> None:
+    def conditionalor(self, tree: TreeT) -> None:
         children = tree.children
         if len(children) == 2:
             self._visit_child(children[0])
@@ -255,7 +267,7 @@ class Converter(Interpreter):
                 f"conditionalor has {len(children)} children",
             )
 
-    def conditionaland(self, tree: Tree) -> None:
+    def conditionaland(self, tree: TreeT) -> None:
         children = tree.children
         if len(children) == 2:
             self._visit_child(children[0])
@@ -271,7 +283,7 @@ class Converter(Interpreter):
 
     # ---- Comparison / relation ----
 
-    def relation(self, tree: Tree) -> None:
+    def relation(self, tree: TreeT) -> None:
         children = tree.children
         if len(children) == 1:
             self._visit_child(children[0])
@@ -349,20 +361,25 @@ class Converter(Interpreter):
             rhs_is_numeric = self._is_numeric_literal(rhs)
             lhs_is_numeric = self._is_numeric_literal(lhs)
             if self._is_json_text_extraction(lhs) and rhs_is_numeric:
-                self._dialect.write_cast_to_numeric(
-                    self._w,
-                    lambda: (self._w.write("("), self._visit_child(lhs), self._w.write(")")),
-                )
+                def write_lhs_paren() -> None:
+                    self._w.write("(")
+                    self._visit_child(lhs)
+                    self._w.write(")")
+
+                self._dialect.write_cast_to_numeric(self._w, write_lhs_paren)
                 self._w.write(f" {sql_op} ")
                 self._visit_child(rhs)
                 return
             if self._is_json_text_extraction(rhs) and lhs_is_numeric:
                 self._visit_child(lhs)
                 self._w.write(f" {sql_op} ")
-                self._dialect.write_cast_to_numeric(
-                    self._w,
-                    lambda: (self._w.write("("), self._visit_child(rhs), self._w.write(")")),
-                )
+
+                def write_rhs_paren() -> None:
+                    self._w.write("(")
+                    self._visit_child(rhs)
+                    self._w.write(")")
+
+                self._dialect.write_cast_to_numeric(self._w, write_rhs_paren)
                 return
 
         self._visit_child(lhs)
@@ -370,30 +387,30 @@ class Converter(Interpreter):
         self._visit_child(rhs)
 
     # Operator prefix handlers - they just delegate to relation
-    def relation_eq(self, tree: Tree) -> None:
+    def relation_eq(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
-    def relation_ne(self, tree: Tree) -> None:
+    def relation_ne(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
-    def relation_lt(self, tree: Tree) -> None:
+    def relation_lt(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
-    def relation_le(self, tree: Tree) -> None:
+    def relation_le(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
-    def relation_gt(self, tree: Tree) -> None:
+    def relation_gt(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
-    def relation_ge(self, tree: Tree) -> None:
+    def relation_ge(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
-    def relation_in(self, tree: Tree) -> None:
+    def relation_in(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
     # ---- IN operator ----
 
-    def _visit_in(self, lhs: Tree, rhs: Tree) -> None:
+    def _visit_in(self, lhs: Branch, rhs: Branch) -> None:
         """Handle the 'in' operator: x in [1,2,3], x in arr, or x in t.json_arr."""
         # x in <JSON array field> routes to a dialect-specific membership
         # predicate; a JSON array can't be tested with plain `= ANY(...)`.
@@ -406,7 +423,7 @@ class Converter(Interpreter):
             lambda: self._visit_child(rhs),
         )
 
-    def _visit_in_json_array(self, lhs: Tree, rhs: Tree) -> bool:
+    def _visit_in_json_array(self, lhs: Branch, rhs: Branch) -> bool:
         """Route `x in <json array>` to the JSON-array membership dialect hooks.
 
         Returns True if the RHS is a JSON array (schema-declared JSON field,
@@ -454,9 +471,9 @@ class Converter(Interpreter):
             self._dialect.write_nested_json_array_membership(self._w, write_elem, write_array)
         return True
 
-    def _unwrap_to_member_dot(self, tree: Tree) -> Tree | None:
+    def _unwrap_to_member_dot(self, tree: Branch) -> TreeT | None:
         """Strip single-child grammar wrappers and return a member_dot node, if any."""
-        node: Tree | Token = tree
+        node: TreeT | Token = tree
         while (
             isinstance(node, Tree)
             and node.data in (
@@ -470,9 +487,9 @@ class Converter(Interpreter):
             return node
         return None
 
-    def _obj_is_bare_root(self, obj: Tree | Token) -> bool:
+    def _obj_is_bare_root(self, obj: TreeT | Token) -> bool:
         """True if a member_dot operand unwraps to a bare identifier (the table root)."""
-        node: Tree | Token = obj
+        node: TreeT | Token = obj
         while (
             isinstance(node, Tree)
             and node.data in ("member", "primary")
@@ -483,7 +500,7 @@ class Converter(Interpreter):
 
     # ---- Arithmetic ----
 
-    def addition(self, tree: Tree) -> None:
+    def addition(self, tree: TreeT) -> None:
         children = tree.children
         if len(children) == 1:
             self._visit_child(children[0])
@@ -559,13 +576,13 @@ class Converter(Interpreter):
                 f"unknown addition operator: {op_name}",
             )
 
-    def addition_add(self, tree: Tree) -> None:
+    def addition_add(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
-    def addition_sub(self, tree: Tree) -> None:
+    def addition_sub(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
-    def multiplication(self, tree: Tree) -> None:
+    def multiplication(self, tree: TreeT) -> None:
         children = tree.children
         if len(children) == 1:
             self._visit_child(children[0])
@@ -606,18 +623,18 @@ class Converter(Interpreter):
                 f"unknown multiplication operator: {op_name}",
             )
 
-    def multiplication_mul(self, tree: Tree) -> None:
+    def multiplication_mul(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
-    def multiplication_div(self, tree: Tree) -> None:
+    def multiplication_div(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
-    def multiplication_mod(self, tree: Tree) -> None:
+    def multiplication_mod(self, tree: TreeT) -> None:
         self._visit_child(tree.children[0])
 
     # ---- Unary ----
 
-    def unary(self, tree: Tree) -> None:
+    def unary(self, tree: TreeT) -> None:
         children = tree.children
         if len(children) == 1:
             self._visit_child(children[0])
@@ -641,15 +658,15 @@ class Converter(Interpreter):
             f"unary has {len(children)} children",
         )
 
-    def unary_not(self, tree: Tree) -> None:
+    def unary_not(self, tree: TreeT) -> None:
         pass  # Handled by unary()
 
-    def unary_neg(self, tree: Tree) -> None:
+    def unary_neg(self, tree: TreeT) -> None:
         pass  # Handled by unary()
 
     # ---- Member access ----
 
-    def member(self, tree: Tree) -> None:
+    def member(self, tree: TreeT) -> None:
         if len(tree.children) == 1:
             self._visit_child(tree.children[0])
         else:
@@ -658,7 +675,7 @@ class Converter(Interpreter):
                 f"member has {len(tree.children)} children",
             )
 
-    def member_dot(self, tree: Tree) -> None:
+    def member_dot(self, tree: TreeT) -> None:
         """Field access: a.b"""
         obj = tree.children[0]
         field_name = str(tree.children[1])
@@ -687,12 +704,12 @@ class Converter(Interpreter):
         validate_field_name(field_name)
         self._w.write(field_name)
 
-    def member_dot_arg(self, tree: Tree) -> None:
+    def member_dot_arg(self, tree: TreeT) -> None:
         """Method call: a.method(args) or comprehension macro."""
         obj = tree.children[0]
         method_name = str(tree.children[1])
         args_node = tree.children[2] if len(tree.children) > 2 else None
-        args = args_node.children if args_node is not None else []
+        args = _children(args_node)
 
         # Comprehension macros
         if method_name in ("all", "exists", "exists_one", "map", "filter"):
@@ -774,7 +791,7 @@ class Converter(Interpreter):
             f"unknown method: {method_name}",
         )
 
-    def member_index(self, tree: Tree) -> None:
+    def member_index(self, tree: TreeT) -> None:
         """Index access: a[0] or a["key"]."""
         obj = tree.children[0]
         index_expr = tree.children[1]
@@ -821,12 +838,12 @@ class Converter(Interpreter):
             lambda: self._visit_child(index_expr),
         )
 
-    def member_object(self, tree: Tree) -> None:
+    def member_object(self, tree: TreeT) -> None:
         raise UnsupportedExpressionError("object construction not supported in SQL conversion")
 
     # ---- Primary expressions ----
 
-    def primary(self, tree: Tree) -> None:
+    def primary(self, tree: TreeT) -> None:
         if len(tree.children) == 1:
             self._visit_child(tree.children[0])
         else:
@@ -835,7 +852,7 @@ class Converter(Interpreter):
                 f"primary has {len(tree.children)} children",
             )
 
-    def ident(self, tree: Tree) -> None:
+    def ident(self, tree: TreeT) -> None:
         """Bare identifier."""
         name = str(tree.children[0])
         # Don't validate or alias comprehension iteration variables
@@ -846,11 +863,11 @@ class Converter(Interpreter):
         validate_field_name(resolved)
         self._w.write(resolved)
 
-    def ident_arg(self, tree: Tree) -> None:
+    def ident_arg(self, tree: TreeT) -> None:
         """Function call: func(args)."""
         func_name = str(tree.children[0])
         args_node = tree.children[1] if len(tree.children) > 1 else None
-        args = args_node.children if args_node is not None else []
+        args = _children(args_node)
 
         # has() function
         if func_name == "has":
@@ -908,22 +925,22 @@ class Converter(Interpreter):
             self._visit_child(arg)
         self._w.write(")")
 
-    def dot_ident_arg(self, tree: Tree) -> None:
+    def dot_ident_arg(self, tree: TreeT) -> None:
         func_name = str(tree.children[0])
         self._w.write(f".{func_name}(")
         if len(tree.children) > 1:
             args_node = tree.children[1]
-            for i, arg in enumerate(args_node.children):
+            for i, arg in enumerate(_children(args_node)):
                 if i > 0:
                     self._w.write(", ")
                 self._visit_child(arg)
         self._w.write(")")
 
-    def dot_ident(self, tree: Tree) -> None:
+    def dot_ident(self, tree: TreeT) -> None:
         name = str(tree.children[0])
         self._w.write(f".{name}")
 
-    def paren_expr(self, tree: Tree) -> None:
+    def paren_expr(self, tree: TreeT) -> None:
         """Parenthesized expression."""
         self._w.write("(")
         self._visit_child(tree.children[0])
@@ -931,7 +948,7 @@ class Converter(Interpreter):
 
     # ---- Literals ----
 
-    def literal(self, tree: Tree) -> None:
+    def literal(self, tree: TreeT) -> None:
         token = tree.children[0]
         if not isinstance(token, Token):
             raise UnsupportedExpressionError("unexpected literal structure")
@@ -956,9 +973,9 @@ class Converter(Interpreter):
             else:
                 self._w.write(str(val))
         elif _is_float_token(token):
-            val = float(str(token))
+            fval = float(str(token))
             if self._parameterize:
-                idx = self._add_param(val)
+                idx = self._add_param(fval)
                 self._dialect.write_param_placeholder(self._w, idx)
             else:
                 self._w.write(str(token))
@@ -998,7 +1015,7 @@ class Converter(Interpreter):
                 f"unknown token type: {token.type}",
             )
 
-    def list_lit(self, tree: Tree) -> None:
+    def list_lit(self, tree: TreeT) -> None:
         """List literal: [1, 2, 3] -> ARRAY[1, 2, 3]."""
         self._dialect.write_array_literal_open(self._w)
         if tree.children:
@@ -1010,7 +1027,7 @@ class Converter(Interpreter):
                     self._visit_child(child)
         self._dialect.write_array_literal_close(self._w)
 
-    def map_lit(self, tree: Tree) -> None:
+    def map_lit(self, tree: TreeT) -> None:
         """Map literal: {"k": v} -> ROW(v) with .k access."""
         self._dialect.write_struct_open(self._w)
         if tree.children:
@@ -1027,13 +1044,13 @@ class Converter(Interpreter):
                     self._visit_child(children[i + 1])
         self._dialect.write_struct_close(self._w)
 
-    def exprlist(self, tree: Tree) -> None:
+    def exprlist(self, tree: TreeT) -> None:
         for i, child in enumerate(tree.children):
             if i > 0:
                 self._w.write(", ")
             self._visit_child(child)
 
-    def mapinits(self, tree: Tree) -> None:
+    def mapinits(self, tree: TreeT) -> None:
         children = tree.children
         first = True
         for i in range(0, len(children), 2):
@@ -1042,7 +1059,7 @@ class Converter(Interpreter):
             first = False
             self._visit_child(children[i + 1])
 
-    def fieldinits(self, tree: Tree) -> None:
+    def fieldinits(self, tree: TreeT) -> None:
         children = tree.children
         first = True
         for i in range(0, len(children), 2):
@@ -1053,7 +1070,7 @@ class Converter(Interpreter):
 
     # ---- String functions ----
 
-    def _visit_contains(self, obj: Tree, args: list) -> None:
+    def _visit_contains(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) != 1:
             raise InvalidArgumentsError("contains() requires exactly 1 argument")
         needle_token = _get_literal_token(args[0])
@@ -1075,7 +1092,7 @@ class Converter(Interpreter):
                 lambda: self._visit_child(args[0]),
             )
 
-    def _visit_starts_with(self, obj: Tree, args: list) -> None:
+    def _visit_starts_with(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) != 1:
             raise InvalidArgumentsError("startsWith() requires exactly 1 argument")
         token = _get_literal_token(args[0])
@@ -1090,7 +1107,7 @@ class Converter(Interpreter):
         self._w.write(f" LIKE '{escaped}%'")
         self._dialect.write_like_escape(self._w)
 
-    def _visit_ends_with(self, obj: Tree, args: list) -> None:
+    def _visit_ends_with(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) != 1:
             raise InvalidArgumentsError("endsWith() requires exactly 1 argument")
         token = _get_literal_token(args[0])
@@ -1105,7 +1122,7 @@ class Converter(Interpreter):
         self._w.write(f" LIKE '%{escaped}'")
         self._dialect.write_like_escape(self._w)
 
-    def _visit_matches_method(self, obj: Tree, args: list) -> None:
+    def _visit_matches_method(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) != 1:
             raise InvalidArgumentsError("matches() requires exactly 1 argument")
         token = _get_literal_token(args[0])
@@ -1122,7 +1139,7 @@ class Converter(Interpreter):
             case_insensitive,
         )
 
-    def _visit_matches_func(self, target: Tree, pattern_expr: Tree) -> None:
+    def _visit_matches_func(self, target: Branch, pattern_expr: Branch) -> None:
         token = _get_literal_token(pattern_expr)
         if not token or not _is_string_token(token):
             raise InvalidArgumentsError("matches() requires a string literal pattern")
@@ -1137,7 +1154,7 @@ class Converter(Interpreter):
             case_insensitive,
         )
 
-    def _visit_size_method(self, obj: Tree) -> None:
+    def _visit_size_method(self, obj: Branch) -> None:
         """size() as a method call on an object."""
         if self._is_array_expression(obj):
             self._dialect.write_array_length(
@@ -1148,7 +1165,7 @@ class Converter(Interpreter):
         self._visit_child(obj)
         self._w.write(")")
 
-    def _visit_size_func(self, arg: Tree) -> None:
+    def _visit_size_func(self, arg: Branch) -> None:
         """size(x) function call."""
         if self._is_array_expression(arg):
             self._dialect.write_array_length(
@@ -1159,7 +1176,7 @@ class Converter(Interpreter):
         self._visit_child(arg)
         self._w.write(")")
 
-    def _visit_char_at(self, obj: Tree, args: list) -> None:
+    def _visit_char_at(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) != 1:
             raise InvalidArgumentsError("charAt() requires exactly 1 argument")
         idx_literal = _get_literal_token(args[0])
@@ -1174,7 +1191,7 @@ class Converter(Interpreter):
             self._w.write(" + 1")
         self._w.write(", 1)")
 
-    def _visit_index_of(self, obj: Tree, args: list) -> None:
+    def _visit_index_of(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) < 1 or len(args) > 2:
             raise InvalidArgumentsError("indexOf() requires 1 or 2 arguments")
 
@@ -1224,7 +1241,7 @@ class Converter(Interpreter):
                 self._visit_child(args[1])
                 self._w.write(" - 1 ELSE -1 END")
 
-    def _visit_last_index_of(self, obj: Tree, args: list) -> None:
+    def _visit_last_index_of(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) < 1:
             raise InvalidArgumentsError("lastIndexOf() requires at least 1 argument")
         # lastIndexOf(needle) using REVERSE
@@ -1242,7 +1259,7 @@ class Converter(Interpreter):
         self._visit_child(args[0])
         self._w.write(") + 1 ELSE -1 END")
 
-    def _visit_substring(self, obj: Tree, args: list) -> None:
+    def _visit_substring(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) < 1 or len(args) > 2:
             raise InvalidArgumentsError("substring() requires 1 or 2 arguments")
 
@@ -1283,7 +1300,7 @@ class Converter(Interpreter):
                 self._w.write(")")
             self._w.write(")")
 
-    def _visit_replace(self, obj: Tree, args: list) -> None:
+    def _visit_replace(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) < 2 or len(args) > 3:
             raise InvalidArgumentsError("replace() requires 2 or 3 arguments")
 
@@ -1306,7 +1323,7 @@ class Converter(Interpreter):
         self._visit_child(args[1])
         self._w.write(")")
 
-    def _visit_split(self, obj: Tree, args: list) -> None:
+    def _visit_split(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) < 1 or len(args) > 2:
             raise InvalidArgumentsError("split() requires 1 or 2 arguments")
 
@@ -1353,7 +1370,7 @@ class Converter(Interpreter):
         else:
             raise InvalidArgumentsError("split() limit must be an integer literal")
 
-    def _visit_join(self, obj: Tree, args: list) -> None:
+    def _visit_join(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) > 1:
             raise InvalidArgumentsError("join() requires 0 or 1 arguments")
         if len(args) == 0:
@@ -1369,7 +1386,7 @@ class Converter(Interpreter):
                 lambda: self._visit_child(args[0]),
             )
 
-    def _visit_format(self, obj: Tree, args: list) -> None:
+    def _visit_format(self, obj: Branch, args: list[Branch]) -> None:
         if len(args) != 1:
             raise InvalidArgumentsError("format() requires exactly 1 argument (the arg list)")
 
@@ -1417,7 +1434,7 @@ class Converter(Interpreter):
 
     # ---- has() function ----
 
-    def _visit_has(self, args: list) -> None:
+    def _visit_has(self, args: list[Branch]) -> None:
         if len(args) != 1:
             raise InvalidArgumentsError("has() requires exactly 1 argument")
         arg = args[0]
@@ -1465,7 +1482,7 @@ class Converter(Interpreter):
 
     # ---- Type casting ----
 
-    def _visit_type_cast(self, type_name: str, args: list) -> None:
+    def _visit_type_cast(self, type_name: str, args: list[Branch]) -> None:
         if len(args) != 1:
             raise InvalidArgumentsError(f"{type_name}() requires exactly 1 argument")
 
@@ -1486,7 +1503,7 @@ class Converter(Interpreter):
 
     # ---- Timestamp functions ----
 
-    def _visit_timestamp_func(self, args: list) -> None:
+    def _visit_timestamp_func(self, args: list[Branch]) -> None:
         if len(args) == 1:
             # timestamp("2021-01-01T00:00:00Z") -> CAST('...' AS TIMESTAMP WITH TIME ZONE)
             self._dialect.write_timestamp_cast(
@@ -1500,7 +1517,7 @@ class Converter(Interpreter):
         else:
             raise InvalidArgumentsError("timestamp() requires 1 or 2 arguments")
 
-    def _visit_duration_func(self, args: list) -> None:
+    def _visit_duration_func(self, args: list[Branch]) -> None:
         if len(args) != 1:
             raise InvalidArgumentsError("duration() requires exactly 1 argument")
         token = _get_literal_token(args[0])
@@ -1512,7 +1529,7 @@ class Converter(Interpreter):
         value, unit = self._parse_duration(raw)
         self._dialect.write_duration(self._w, value, unit)
 
-    def _visit_interval_func(self, args: list) -> None:
+    def _visit_interval_func(self, args: list[Branch]) -> None:
         if len(args) != 2:
             raise InvalidArgumentsError("interval() requires exactly 2 arguments")
         # interval(value, UNIT) - UNIT is an identifier
@@ -1532,7 +1549,7 @@ class Converter(Interpreter):
             unit,
         )
 
-    def _visit_datetime_constructor(self, func_name: str, args: list) -> None:
+    def _visit_datetime_constructor(self, func_name: str, args: list[Branch]) -> None:
         """Handle date(), time(), datetime() constructors."""
         self._w.write(func_name.upper())
         self._w.write("(")
@@ -1542,7 +1559,7 @@ class Converter(Interpreter):
             self._visit_child(arg)
         self._w.write(")")
 
-    def _visit_current_datetime(self, func_name: str, args: list) -> None:
+    def _visit_current_datetime(self, func_name: str, args: list[Branch]) -> None:
         self._w.write(func_name.upper())
         self._w.write("(")
         for i, arg in enumerate(args):
@@ -1551,7 +1568,7 @@ class Converter(Interpreter):
             self._visit_child(arg)
         self._w.write(")")
 
-    def _visit_timestamp_extract(self, obj: Tree, method_name: str, args: list) -> None:
+    def _visit_timestamp_extract(self, obj: Branch, method_name: str, args: list[Branch]) -> None:
         """Handle timestamp extraction methods: getFullYear(), getMonth(), etc."""
         part_map = {
             "getFullYear": "YEAR",
@@ -1570,10 +1587,10 @@ class Converter(Interpreter):
             raise UnsupportedExpressionError(f"unsupported timestamp method: {method_name}")
 
         # Check for timezone argument
-        write_tz = None
+        write_tz: WriteFunc | None = None
         if args:
-            def write_tz():
-                return self._visit_child(args[0])
+            def write_tz() -> None:
+                self._visit_child(args[0])
 
         self._dialect.write_extract(
             self._w, part, lambda: self._visit_child(obj), write_tz
@@ -1628,7 +1645,7 @@ class Converter(Interpreter):
 
     # ---- Comprehensions ----
 
-    def _visit_comprehension(self, source: Tree, macro_name: str, args: list) -> None:
+    def _visit_comprehension(self, source: Branch, macro_name: str, args: list[Branch]) -> None:
         """Handle comprehension macros: all, exists, exists_one, map, filter."""
         if self._comprehension_depth >= MAX_COMPREHENSION_DEPTH:
             raise MaxComprehensionDepthExceededError(
@@ -1656,12 +1673,12 @@ class Converter(Interpreter):
         finally:
             self._comprehension_depth -= 1
 
-    def _write_unnest_source(self, source: Tree, iter_var: str) -> None:
+    def _write_unnest_source(self, source: Branch, iter_var: str) -> None:
         """Write the UNNEST(source) AS var clause."""
         self._dialect.write_unnest(self._w, lambda: self._visit_child(source))
         self._w.write(f" AS {iter_var}")
 
-    def _visit_comp_all(self, source: Tree, args: list) -> None:
+    def _visit_comp_all(self, source: Branch, args: list[Branch]) -> None:
         """all(x, pred) -> NOT EXISTS (SELECT 1 FROM UNNEST(src) AS x WHERE NOT (pred))"""
         if len(args) != 2:
             raise InvalidArgumentsError("all() requires exactly 2 arguments")
@@ -1677,7 +1694,7 @@ class Converter(Interpreter):
         finally:
             self._comprehension_vars.discard(iter_var)
 
-    def _visit_comp_exists(self, source: Tree, args: list) -> None:
+    def _visit_comp_exists(self, source: Branch, args: list[Branch]) -> None:
         """exists(x, pred) -> EXISTS (SELECT 1 FROM UNNEST(src) AS x WHERE pred)"""
         if len(args) != 2:
             raise InvalidArgumentsError("exists() requires exactly 2 arguments")
@@ -1693,7 +1710,7 @@ class Converter(Interpreter):
         finally:
             self._comprehension_vars.discard(iter_var)
 
-    def _visit_comp_exists_one(self, source: Tree, args: list) -> None:
+    def _visit_comp_exists_one(self, source: Branch, args: list[Branch]) -> None:
         """exists_one(x, pred) -> (SELECT COUNT(*) FROM UNNEST(src) AS x WHERE pred) = 1"""
         if len(args) != 2:
             raise InvalidArgumentsError("exists_one() requires exactly 2 arguments")
@@ -1709,7 +1726,7 @@ class Converter(Interpreter):
         finally:
             self._comprehension_vars.discard(iter_var)
 
-    def _visit_comp_map(self, source: Tree, args: list) -> None:
+    def _visit_comp_map(self, source: Branch, args: list[Branch]) -> None:
         """map(x, transform) -> ARRAY(SELECT transform FROM UNNEST(src) AS x)"""
         if len(args) != 2:
             raise InvalidArgumentsError("map() requires exactly 2 arguments")
@@ -1726,7 +1743,7 @@ class Converter(Interpreter):
         finally:
             self._comprehension_vars.discard(iter_var)
 
-    def _visit_comp_map_filter(self, source: Tree, args: list) -> None:
+    def _visit_comp_map_filter(self, source: Branch, args: list[Branch]) -> None:
         """map(x, filter, transform) -> ARRAY(SELECT transform FROM UNNEST(src) AS x WHERE filter)"""
         iter_var = self._get_ident_name(args[0])
         filter_pred = args[1]
@@ -1744,7 +1761,7 @@ class Converter(Interpreter):
         finally:
             self._comprehension_vars.discard(iter_var)
 
-    def _visit_comp_filter(self, source: Tree, args: list) -> None:
+    def _visit_comp_filter(self, source: Branch, args: list[Branch]) -> None:
         """filter(x, pred) -> ARRAY(SELECT x FROM UNNEST(src) AS x WHERE pred)"""
         if len(args) != 2:
             raise InvalidArgumentsError("filter() requires exactly 2 arguments")
@@ -1779,11 +1796,7 @@ class Converter(Interpreter):
         return name in self._json_variables
 
     def _is_field_json(self, table_name: str, field_name: str) -> bool:
-        schema = self._schemas.get(table_name)
-        if not schema:
-            return False
-        field = schema.find_field(field_name)
-        return field is not None and (field.is_json or field.is_jsonb)
+        return field_is_json(self._schemas, table_name, field_name)
 
     def _is_field_jsonb(self, table_name: str, field_name: str) -> bool:
         schema = self._schemas.get(table_name)
@@ -1792,7 +1805,7 @@ class Converter(Interpreter):
         field = schema.find_field(field_name)
         return field is not None and field.is_jsonb
 
-    def _is_nested_json_field(self, tree: Tree) -> bool:
+    def _is_nested_json_field(self, tree: TreeT) -> bool:
         """Check if a member_dot chain involves a JSON field."""
         if tree.data != "member_dot":
             return False
@@ -1803,11 +1816,11 @@ class Converter(Interpreter):
         first_field = self._get_first_field(obj, str(tree.children[1]))
         return self._is_field_json(table_name, first_field)
 
-    def _build_json_path(self, tree: Tree) -> None:
+    def _build_json_path(self, tree: TreeT) -> None:
         """Build a JSON path expression from a member_dot chain."""
         # Collect the chain: table.json_field.path1.path2...
         parts: list[str] = []
-        node = tree
+        node: Branch = tree
         while isinstance(node, Tree) and node.data == "member_dot":
             parts.append(str(node.children[1]))
             node = node.children[0]
@@ -1823,7 +1836,7 @@ class Converter(Interpreter):
 
     def _emit_json_path(
         self,
-        root_node: Tree | Token,
+        root_node: TreeT | Token,
         parts: list[str],
         *,
         root_is_column: bool,
@@ -1882,7 +1895,7 @@ class Converter(Interpreter):
                     return intermediate
                 current_base = make_base()
 
-    def _is_json_text_extraction(self, tree: Tree) -> bool:
+    def _is_json_text_extraction(self, tree: Branch) -> bool:
         """Check if a tree represents a JSON text extraction (->>)."""
         node = tree
         while isinstance(node, Tree) and node.data in (
@@ -1915,7 +1928,7 @@ class Converter(Interpreter):
                 f"field '{field_name}' not found in schema for '{table_name}'",
             )
 
-    def _is_member_dot_array_field(self, tree: Tree) -> bool:
+    def _is_member_dot_array_field(self, tree: Branch) -> bool:
         """Check if a tree represents an array field via schema."""
         node = tree
         while isinstance(node, Tree) and node.data in (
@@ -1944,7 +1957,7 @@ class Converter(Interpreter):
         field = schema.find_field(field_name)
         return field is not None and field.repeated
 
-    def _is_timestamp_field(self, root_name: str, tree: Tree) -> bool:
+    def _is_timestamp_field(self, root_name: str, tree: Branch) -> bool:
         """Check if a field is a timestamp type based on schema or naming."""
         _TIMESTAMP_NAMES = {"created_at", "updated_at", "timestamp", "ts"}
         # Check the root identifier name directly
@@ -1960,14 +1973,14 @@ class Converter(Interpreter):
         return False
 
     @staticmethod
-    def _is_numeric_literal(tree: Tree) -> bool:
+    def _is_numeric_literal(tree: Branch) -> bool:
         """Check if a tree is a numeric literal (int or float)."""
         tok = _get_literal_token(tree)
         if tok is None:
             return False
         return _is_int_token(tok) or _is_float_token(tok) or _is_uint_token(tok)
 
-    def _is_array_expression(self, tree: Tree) -> bool:
+    def _is_array_expression(self, tree: Branch) -> bool:
         """Check if a tree produces an array result.
 
         Detects: schema array fields, list literals, split(), filter(), map(),
@@ -2011,7 +2024,7 @@ class Converter(Interpreter):
 
     # ---- Utility helpers ----
 
-    def _get_root_ident(self, tree: Tree | Token) -> str | None:
+    def _get_root_ident(self, tree: TreeT | Token) -> str | None:
         """Get the root identifier name from a tree."""
         node = tree
         while isinstance(node, Tree):
@@ -2027,7 +2040,7 @@ class Converter(Interpreter):
             return str(node)
         return None
 
-    def _get_first_field(self, obj: Tree | Token, fallback: str) -> str:
+    def _get_first_field(self, obj: TreeT | Token, fallback: str) -> str:
         """Get the first field name in a member_dot chain."""
         node = obj
         while isinstance(node, Tree):
@@ -2047,7 +2060,7 @@ class Converter(Interpreter):
                 break
         return fallback
 
-    def _get_ident_name(self, tree: Tree) -> str:
+    def _get_ident_name(self, tree: Branch) -> str:
         """Extract identifier name from a tree node."""
         node = tree
         while isinstance(node, Tree):
@@ -2058,7 +2071,7 @@ class Converter(Interpreter):
             else:
                 raise InvalidArgumentsError(
                     "expected identifier",
-                    f"cannot extract identifier from {tree.data}",
+                    f"cannot extract identifier from {node.data}",
                 )
         if isinstance(node, Token) and node.type == "IDENT":
             return str(node)
@@ -2070,7 +2083,7 @@ class Converter(Interpreter):
     def _is_comprehension_var(self, name: str) -> bool:
         return name in self._comprehension_vars
 
-    def _is_duration_expression(self, tree: Tree | Token) -> bool:
+    def _is_duration_expression(self, tree: TreeT | Token) -> bool:
         """Check if a tree is specifically a duration/interval expression."""
         if isinstance(tree, Token):
             return False
@@ -2084,7 +2097,7 @@ class Converter(Interpreter):
             and not (isinstance(child, Tree) and child.data == "exprlist")
         )
 
-    def _is_timestamp_or_duration_context(self, lhs: Tree, rhs: Tree) -> bool:
+    def _is_timestamp_or_duration_context(self, lhs: Branch, rhs: Branch) -> bool:
         """Detect if this is a timestamp/duration arithmetic context.
 
         We detect this by looking for duration() or interval() or timestamp() calls,
@@ -2092,7 +2105,7 @@ class Converter(Interpreter):
         """
         return self._tree_has_temporal(lhs) or self._tree_has_temporal(rhs)
 
-    def _tree_has_temporal(self, tree: Tree | Token) -> bool:
+    def _tree_has_temporal(self, tree: TreeT | Token) -> bool:
         """Check if a tree contains temporal expressions (duration, interval, timestamp, etc.)."""
         if isinstance(tree, Token):
             return False

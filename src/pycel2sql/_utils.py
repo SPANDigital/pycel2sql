@@ -57,6 +57,42 @@ def validate_field_name(name: str) -> None:
         )
 
 
+def validate_sql_field_name(
+    name: str,
+    *,
+    reserved: set[str],
+    keyword_label: str,
+    max_length: int = 0,
+) -> None:
+    """Validate a field/identifier name against one dialect's rules.
+
+    ``reserved`` is the dialect's reserved-keyword set, ``keyword_label`` names
+    the dialect in the (internal) error detail, and ``max_length`` (0 = no limit)
+    caps the identifier length. Shared by the dialects whose validation differs
+    only in those three parameters (DuckDB, BigQuery, MySQL, SQLite).
+    """
+    if not name:
+        raise InvalidFieldNameError(
+            "field name cannot be empty",
+            "empty field name provided",
+        )
+    if max_length and len(name) > max_length:
+        raise InvalidFieldNameError(
+            "field name too long",
+            f"field name '{name}' exceeds {max_length} characters",
+        )
+    if not FIELD_NAME_RE.match(name):
+        raise InvalidFieldNameError(
+            "invalid field name format",
+            f"field name '{name}' contains invalid characters",
+        )
+    if name.lower() in reserved:
+        raise InvalidFieldNameError(
+            "field name is a reserved SQL keyword",
+            f"field name '{name}' is a reserved {keyword_label} keyword",
+        )
+
+
 def escape_like_pattern(pattern: str) -> str:
     """Escape special characters in a SQL LIKE pattern."""
     result = pattern.replace("\\", "\\\\")
@@ -100,69 +136,7 @@ def convert_re2_to_posix(re2_pattern: str) -> tuple[str, bool]:
 
     Returns (posix_pattern, case_insensitive).
     """
-    if len(re2_pattern) > MAX_REGEX_LENGTH:
-        raise InvalidRegexPatternError(
-            "regex pattern too long",
-            f"pattern length {len(re2_pattern)} exceeds limit {MAX_REGEX_LENGTH}",
-        )
-
-    validate_no_null_bytes(re2_pattern, "regex patterns")
-
-    case_insensitive = False
-    pattern = re2_pattern
-
-    # Extract (?i) flag
-    if pattern.startswith("(?i)"):
-        case_insensitive = True
-        pattern = pattern[4:]
-
-    # Reject unsupported features
-    if re.search(r"\(\?[!=<]", pattern):
-        raise InvalidRegexPatternError(
-            "lookahead/lookbehind not supported",
-            f"pattern contains lookahead/lookbehind: {re2_pattern}",
-        )
-    if re.search(r"\(\?P<", pattern):
-        raise InvalidRegexPatternError(
-            "named captures not supported",
-            f"pattern contains named captures: {re2_pattern}",
-        )
-    # Reject inline flags other than (?i) at start
-    if re.search(r"\(\?[imsx]", pattern):
-        raise InvalidRegexPatternError(
-            "inline flags not supported",
-            f"pattern contains inline flags: {re2_pattern}",
-        )
-
-    # ReDoS detection
-    if _REDOS_NESTED_QUANTIFIER.search(pattern):
-        raise InvalidRegexPatternError(
-            "potential ReDoS: nested quantifiers detected",
-            f"pattern has nested quantifiers: {re2_pattern}",
-        )
-
-    # Check nesting depth
-    depth = 0
-    max_depth = 0
-    for ch in pattern:
-        if ch == "(":
-            depth += 1
-            max_depth = max(max_depth, depth)
-        elif ch == ")":
-            depth -= 1
-    if max_depth > MAX_REGEX_NESTING:
-        raise InvalidRegexPatternError(
-            "regex nesting too deep",
-            f"pattern nesting depth {max_depth} exceeds limit {MAX_REGEX_NESTING}",
-        )
-
-    # Count groups
-    group_count = pattern.count("(") - pattern.count("(?:")
-    if group_count > MAX_REGEX_GROUPS:
-        raise InvalidRegexPatternError(
-            "too many regex groups",
-            f"pattern has {group_count} groups, limit is {MAX_REGEX_GROUPS}",
-        )
+    pattern, case_insensitive = _validate_regex_common(re2_pattern)
 
     # Convert RE2 shorthand classes to POSIX
     pattern = pattern.replace("\\d", "[[:digit:]]")

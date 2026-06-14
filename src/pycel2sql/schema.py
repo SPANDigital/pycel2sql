@@ -35,3 +35,14 @@ class Schema:
 
     def __len__(self) -> int:
         return len(self._fields)
+
+
+def field_is_json(
+    schemas: dict[str, Schema], table_name: str, field_name: str
+) -> bool:
+    """Return True if ``table_name.field_name`` is a declared JSON/JSONB field."""
+    schema = schemas.get(table_name)
+    if not schema:
+        return False
+    field = schema.find_field(field_name)
+    return field is not None and (field.is_json or field.is_jsonb)
