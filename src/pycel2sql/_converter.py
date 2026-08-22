@@ -1674,9 +1674,10 @@ class Converter(Interpreter[Token, None]):
             self._comprehension_depth -= 1
 
     def _write_unnest_source(self, source: Branch, iter_var: str) -> None:
-        """Write the UNNEST(source) AS var clause."""
-        self._dialect.write_unnest(self._w, lambda: self._visit_child(source))
-        self._w.write(f" AS {iter_var}")
+        """Write the comprehension source clause, binding iter_var."""
+        self._dialect.write_comprehension_source(
+            self._w, lambda: self._visit_child(source), iter_var
+        )
 
     def _visit_comp_all(self, source: Branch, args: list[Branch]) -> None:
         """all(x, pred) -> NOT EXISTS (SELECT 1 FROM UNNEST(src) AS x WHERE NOT (pred))"""
@@ -1686,11 +1687,13 @@ class Converter(Interpreter[Token, None]):
         pred = args[1]
         self._comprehension_vars.add(iter_var)
         try:
-            self._w.write("NOT EXISTS (SELECT 1 FROM ")
-            self._write_unnest_source(source, iter_var)
-            self._w.write(" WHERE NOT (")
-            self._visit_child(pred)
-            self._w.write("))")
+            def _body() -> None:
+                self._write_unnest_source(source, iter_var)
+                self._w.write(" WHERE NOT (")
+                self._visit_child(pred)
+                self._w.write(")")
+
+            self._dialect.write_comprehension_not_exists(self._w, _body)
         finally:
             self._comprehension_vars.discard(iter_var)
 
@@ -1702,11 +1705,12 @@ class Converter(Interpreter[Token, None]):
         pred = args[1]
         self._comprehension_vars.add(iter_var)
         try:
-            self._w.write("EXISTS (SELECT 1 FROM ")
-            self._write_unnest_source(source, iter_var)
-            self._w.write(" WHERE ")
-            self._visit_child(pred)
-            self._w.write(")")
+            def _body() -> None:
+                self._write_unnest_source(source, iter_var)
+                self._w.write(" WHERE ")
+                self._visit_child(pred)
+
+            self._dialect.write_comprehension_exists(self._w, _body)
         finally:
             self._comprehension_vars.discard(iter_var)
 

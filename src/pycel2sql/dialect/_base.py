@@ -223,6 +223,32 @@ class Dialect(ABC):
     @abstractmethod
     def write_unnest(self, w: StringIO, write_source: WriteFunc) -> None: ...
 
+    def write_comprehension_source(
+        self, w: StringIO, write_source: WriteFunc, iter_var: str
+    ) -> None:
+        """Write the FROM source of a comprehension subquery, binding iter_var.
+
+        The default binds the unnest alias directly, which is only correct
+        where the source is row-valued (PostgreSQL/BigQuery/Spark UNNEST).
+        Table-valued sources (SQLite json_each, MySQL JSON_TABLE) and
+        DuckDB's struct-producing UNNEST override this to rename the value
+        column to iter_var, so bare references to it resolve.
+        """
+        self.write_unnest(w, write_source)
+        w.write(f" AS {iter_var}")
+
+    def write_comprehension_exists(self, w: StringIO, write_body: WriteFunc) -> None:
+        """Wrap a comprehension's existential subquery: EXISTS (SELECT 1 FROM <body>)."""
+        w.write("EXISTS (SELECT 1 FROM ")
+        write_body()
+        w.write(")")
+
+    def write_comprehension_not_exists(self, w: StringIO, write_body: WriteFunc) -> None:
+        """Negation of write_comprehension_exists: NOT EXISTS (SELECT 1 FROM <body>)."""
+        w.write("NOT EXISTS (SELECT 1 FROM ")
+        write_body()
+        w.write(")")
+
     @abstractmethod
     def write_array_subquery_open(self, w: StringIO) -> None: ...
 

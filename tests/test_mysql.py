@@ -153,8 +153,12 @@ class TestMySQLComprehensions:
     def test_exists(self, d):
         schemas = {"t": Schema([FieldSchema("arr", repeated=True)])}
         result = convert("t.arr.exists(x, x > 5)", dialect=d, schemas=schemas)
-        assert "EXISTS" in result
+        # COUNT comparison, not EXISTS: MySQL 8.x turns a correlated EXISTS
+        # into a semijoin and loses the JSON_TABLE correlation.
+        assert result.startswith("(SELECT COUNT(*) FROM ")
+        assert result.endswith(") > 0")
         assert "JSON_TABLE(" in result
+        assert "value AS x" in result
 
 
 class TestMySQLStruct:

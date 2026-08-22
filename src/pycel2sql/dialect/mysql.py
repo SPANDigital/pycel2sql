@@ -283,6 +283,28 @@ class MySQLDialect(Dialect):
         write_source()
         w.write(", '$[*]' COLUMNS(value TEXT PATH '$'))")
 
+    def write_comprehension_source(
+        self, w: StringIO, write_source: WriteFunc, iter_var: str
+    ) -> None:
+        # JSON_TABLE is table-valued, so the value column is renamed to
+        # iter_var through a derived table (JSON_TABLE itself needs an alias).
+        w.write(f"(SELECT value AS {iter_var} FROM ")
+        self.write_unnest(w, write_source)
+        w.write(" AS jt) AS _t")
+
+    def write_comprehension_exists(self, w: StringIO, write_body: WriteFunc) -> None:
+        # Not EXISTS: the MySQL 8.x optimizer turns a correlated EXISTS into a
+        # semijoin and loses the correlation to JSON_TABLE, silently matching
+        # nothing (works from 9.x). COUNT comparisons are never transformed.
+        w.write("(SELECT COUNT(*) FROM ")
+        write_body()
+        w.write(") > 0")
+
+    def write_comprehension_not_exists(self, w: StringIO, write_body: WriteFunc) -> None:
+        w.write("(SELECT COUNT(*) FROM ")
+        write_body()
+        w.write(") = 0")
+
     def write_array_subquery_open(self, w: StringIO) -> None:
         w.write("(SELECT JSON_ARRAYAGG(")
 
