@@ -248,6 +248,14 @@ class DuckDBDialect(Dialect):
         write_source()
         w.write(")")
 
+    def write_comprehension_source(
+        self, w: StringIO, write_source: WriteFunc, iter_var: str
+    ) -> None:
+        # DuckDB's FROM UNNEST(arr) AS a binds a to a STRUCT(unnest ...) row,
+        # so a = 'x' is a cast error; the column-alias form binds the value.
+        self.write_unnest(w, write_source)
+        w.write(f" AS _t({iter_var})")
+
     def write_array_subquery_open(self, w: StringIO) -> None:
         w.write("ARRAY(SELECT ")
 

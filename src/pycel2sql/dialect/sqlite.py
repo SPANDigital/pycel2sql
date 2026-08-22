@@ -313,6 +313,15 @@ class SQLiteDialect(Dialect):
         write_source()
         w.write(")")
 
+    def write_comprehension_source(
+        self, w: StringIO, write_source: WriteFunc, iter_var: str
+    ) -> None:
+        # json_each is table-valued (rows of key, value, type, ...), so a bare
+        # reference to the alias is "no such column"; rename value to iter_var.
+        w.write(f"(SELECT value AS {iter_var} FROM ")
+        self.write_unnest(w, write_source)
+        w.write(") AS _t")
+
     def write_array_subquery_open(self, w: StringIO) -> None:
         w.write("(SELECT json_group_array(")
 
